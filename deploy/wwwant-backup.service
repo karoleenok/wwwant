@@ -1,0 +1,16 @@
+[Unit]
+Description=wwwant: ежедневная копия базы
+
+[Service]
+Type=oneshot
+User=wwwant
+Group=wwwant
+EnvironmentFile=/etc/wwwant/env
+WorkingDirectory=/opt/wwwant
+ExecStart=/usr/local/bin/node server/backup.js
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wwwant /var/backups/wwwant
