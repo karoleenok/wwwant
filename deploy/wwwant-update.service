@@ -1,7 +1,0 @@
-[Unit]
-Description=wwwant: автообновление из GitHub
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/wwwant-update

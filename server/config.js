@@ -1,18 +1,10 @@
-import path from 'node:path';
-
-export function makeConfig(env = process.env) {
+export function makeConfig(env = {}) {
   const n = (v, d) => (v === undefined || v === '' || Number.isNaN(+v) ? d : +v);
   return {
-    port: n(env.PORT, 3000),
-    host: env.HOST || '127.0.0.1',
-    dataDir: env.DATA_DIR || path.resolve('data'),
-    webDir: env.WEB_DIR || path.resolve('web'),
-    // https-адрес мини-аппки, без слэша на конце. Нужен для кнопок «Открыть тропу».
-    webappUrl: (env.WEBAPP_URL || '').replace(/\/$/, ''),
-    claimCode: env.CLAIM_CODE || '',
-    claimMinutes: n(env.CLAIM_MINUTES, 60),
+    // https-адрес мини-аппки, без слэша на конце. Если не задан, берём адрес, по которому открыли Worker.
+    webappUrl: String(env.WEBAPP_URL || '').replace(/\/$/, ''),
     // Можно перечислить несколько адресов через запятую: сначала основной, затем мосты.
-    tgBases: (env.TG_API_BASES || 'https://api.telegram.org').split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean),
+    tgBases: String(env.TG_API_BASES || 'https://api.telegram.org').split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean),
     operator: {
       name: env.OPERATOR_NAME || '',
       inn: env.OPERATOR_INN || '',

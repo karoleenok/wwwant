@@ -1,67 +1,58 @@
-import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import { openDb } from './db.js';
+import { Buffer } from 'node:buffer';
 import { verifyInitData } from './auth.js';
 import { makeLimiter } from './limits.js';
 import { cleanItem, cleanBought, isJpeg } from './validate.js';
 import { makeTg, TgError } from './tg.js';
-import { makeBot, startPolling } from './bot.js';
+import { makeBot } from './bot.js';
 import { outboxTick } from './outbox.js';
-import { digestTick } from './digest.js';
-import { policyPage, claimForm, claimDone } from './pages.js';
+import { digestTick, inDigestWindow } from './digest.js';
+import { policyPage } from './pages.js';
+import { LimitError } from './db.js';
 
 const MAX_JSON = 512 * 1024;
 const MAX_PHOTO = 200 * 1024;
-const TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,50}$/;
+const MAX_UPDATE = 256 * 1024;
+const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 
 class HttpError extends Error { constructor(status, code) { super(code); this.status = status; this.code = code; } }
 
-function readBody(req, max) {
-  return new Promise((resolve, reject) => {
-    const chunks = []; let n = 0;
-    // лишнее дочитываем и выбрасываем, чтобы ответить 413, а не рвать соединение; совсем огромное обрываем
-    req.on('data', c => { n += c.length; if (n > max * 8) req.destroy(); else if (n <= max) chunks.push(c); });
-    req.on('end', () => (n > max ? reject(new HttpError(413, 'too-big')) : resolve(Buffer.concat(chunks))));
-    req.on('error', () => reject(new HttpError(400, 'read')));
-  });
+/** Читаем тело с потолком: лишнее не копим в памяти, а сразу отвечаем 413. */
+async function readBody(request, max) {
+  const len = Number(request.headers.get('content-length') || 0);
+  if (len > max) throw new HttpError(413, 'too-big');
+  if (!request.body) return Buffer.alloc(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { try { await reader.cancel(); } catch { /* ok */ } throw new HttpError(413, 'too-big'); }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
 }
 
-export function createApp(cfg, { fetchFn } = {}) {
-  const db = openDb(path.join(cfg.dataDir, 'wwwant.sqlite'));
-  const S = { token: null, botName: null, startedAt: Date.now(), claimFails: 0, logs: [] };
-  const tokenFile = path.join(cfg.dataDir, 'bot.token');
-  const log = (...a) => { if (process.env.WW_QUIET !== '1') console.log(new Date().toISOString(), ...a); };
-  const tg = makeTg({ bases: cfg.tgBases, getToken: () => S.token, fetchFn });
+const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+
+/**
+ * Приложение целиком: handle(request, ctx) отвечает на запросы, tick() запускается по cron раз в минуту.
+ * Ни Node-сервера, ни файлов: база приходит снаружи (D1), токен бота тоже.
+ */
+export function createApp({ cfg, db, token = '', fetchFn, indexHtml, log = (...a) => console.log(...a) }) {
+  const S = { botName: null, setupKey: '', baseLoaded: false, webhookSecret: null, photoSecret: null };
+  const tg = makeTg({ bases: cfg.tgBases, getToken: () => token, fetchFn });
   const bot = makeBot({ db, tg, cfg });
-  const photoSecret = db.secret('photo');
   const apiLimit = makeLimiter(240, 60000);
   const ipLimit = makeLimiter(120, 60000);
-  const claimLimit = makeLimiter(20, 60000);
 
-  // ---------- токен ----------
-  async function adoptToken(tok) {
-    const me = await tg.call('getMe', {}, { token: tok, timeoutMs: 15000 });
-    S.token = tok; S.botName = me.username || '';
-    return me;
-  }
-  async function tokenWatch() {
-    if (S.token) return;
-    let tok = '';
-    try { tok = fs.readFileSync(tokenFile, 'utf8').trim(); } catch { return; }
-    if (!TOKEN_RE.test(tok)) return;
-    try { await adoptToken(tok); log('token-ok'); } catch (e) { log('token-check-failed', e instanceof TgError ? e.code : 'err'); }
-  }
-
-  // ---------- CSP ----------
-  let indexHtml = null, csp = '';
-  function loadIndex() {
-    indexHtml = fs.readFileSync(path.join(cfg.webDir, 'index.html'));
-    const html = indexHtml.toString('utf8');
-    const hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+  // ---------- CSP: хэши inline-скриптов считаем один раз ----------
+  const csp = (() => {
+    const hashes = [...indexHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
       .map(m => `'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
-    csp = [
+    return [
       "default-src 'none'",
       `script-src 'self' https://telegram.org ${hashes.join(' ')}`,
       "style-src 'self' 'unsafe-inline'",
@@ -71,8 +62,7 @@ export function createApp(cfg, { fetchFn } = {}) {
       "frame-ancestors https://web.telegram.org https://webk.telegram.org https://webz.telegram.org https://*.telegram.org",
       "base-uri 'none'", "form-action 'self'", "object-src 'none'"
     ].join('; ');
-  }
-  loadIndex();
+  })();
 
   const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
   const baseHeaders = {
@@ -81,78 +71,111 @@ export function createApp(cfg, { fetchFn } = {}) {
     'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=()',
     'cross-origin-opener-policy': 'same-origin'
   };
+  const send = (status, body, type = 'text/plain; charset=utf-8', extra = {}) =>
+    new Response(body, { status, headers: { ...baseHeaders, 'content-type': type, 'cache-control': 'no-store', ...extra } });
+  const json = (status, obj) => send(status, JSON.stringify(obj), 'application/json; charset=utf-8');
+  const html = (status, body) => send(status, body, 'text/html; charset=utf-8', { 'content-security-policy': PAGE_CSP });
 
-  function send(res, status, body, type = 'text/plain; charset=utf-8', extra = {}) {
-    res.writeHead(status, { ...baseHeaders, 'content-type': type, 'cache-control': 'no-store', ...extra });
-    res.end(body);
+  // ---------- адрес приложения и настройка бота ----------
+  /** Адрес мини-аппки: из WEBAPP_URL, а если не задан, запоминаем тот, по которому впервые открыли Worker. */
+  async function loadBase(origin = '') {
+    if (cfg.webappUrl || S.baseLoaded) return;
+    let v = await db.kvGet('origin');
+    if (!v && origin) { await db.kvAdd('origin', origin); v = await db.kvGet('origin'); }
+    if (v) { cfg.webappUrl = v; S.baseLoaded = true; }
   }
-  const json = (res, status, obj) => send(res, status, JSON.stringify(obj), 'application/json; charset=utf-8');
-  const html = (res, status, body, extra = {}) => send(res, status, body, 'text/html; charset=utf-8', { 'content-security-policy': PAGE_CSP, ...extra });
 
-  const clientIp = req => {
-    const ra = req.socket.remoteAddress || '';
-    const local = ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
-    const xf = local && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    return xf || ra;
-  };
-  const isHttps = req => String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  /**
+   * Как только у Worker есть токен и адрес, сам подключаем webhook, кнопку меню и команды.
+   * Ничего вручную делать не нужно: срабатывает при первом заходе на страницу и по cron.
+   */
+  async function ensureSetup() {
+    if (!token || !cfg.webappUrl) return;
+    const fp = crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
+    const key = `${cfg.webappUrl}|${fp}`;
+    if (S.setupKey === key) return;
+    try {
+      const me = await tg.call('getMe', {}, { timeoutMs: 15000 });
+      S.botName = me.username || '';
+      if ((await db.kvGet('setup')) !== key) {
+        await tg.call('setWebhook', { url: cfg.webappUrl + '/tg', secret_token: await webhookSecret(), allowed_updates: ALLOWED_UPDATES, max_connections: 20 });
+        try { await tg.call('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Тропа', web_app: { url: cfg.webappUrl } } }); } catch { /* не критично */ }
+        try {
+          await tg.call('setMyCommands', { commands: [
+            { command: 'start', description: 'Начать' }, { command: 'week', description: 'Сводка за неделю сейчас' },
+            { command: 'digest_off', description: 'Выключить сводку' }, { command: 'delete_me', description: 'Удалить все мои данные' }] });
+        } catch { /* не критично */ }
+        await db.kvSet('setup', key);
+        log('setup-done');
+      }
+      S.setupKey = key;
+    } catch (e) { log('setup-failed', e instanceof TgError ? e.code : 'err'); }
+  }
+
+  const webhookSecret = async () => (S.webhookSecret ??= await db.secret('webhook'));
+  const photoSecret = async () => (S.photoSecret ??= await db.secret('photo'));
 
   // ---------- фото: ссылка-ключ ----------
-  const photoKey = (tgId, id, ver) => crypto.createHmac('sha256', photoSecret).update(`${tgId}:${id}:${ver}`).digest('hex').slice(0, 32);
-  const photoUrl = (tgId, it) => `/p/${tgId}/${it.id}/${it.photo_ver}/${photoKey(tgId, it.id, it.photo_ver)}`;
+  const photoKey = (secret, tgId, id, ver) => crypto.createHmac('sha256', secret).update(`${tgId}:${id}:${ver}`).digest('hex').slice(0, 32);
 
   // ---------- API ----------
-  function authUser(req) {
-    if (!S.token) throw new HttpError(503, 'starting');
-    const h = String(req.headers.authorization || '');
+  async function authUser(request) {
+    if (!token) throw new HttpError(503, 'starting');
+    const h = String(request.headers.get('authorization') || '');
     if (!h.startsWith('tma ')) throw new HttpError(401, 'auth');
-    const u = verifyInitData(h.slice(4), S.token, cfg.initDataMaxAge);
+    const u = verifyInitData(h.slice(4), token, cfg.initDataMaxAge);
     if (!u) throw new HttpError(401, 'auth');
     if (!apiLimit('u' + u.id)) throw new HttpError(429, 'slow-down');
     return db.ensureUser(u.id, u.first_name);
   }
   const needConsent = u => { if (!u.consent_at) throw new HttpError(403, 'consent'); };
 
-  function stateOf(u) {
+  async function stateOf(u) {
+    const secret = await photoSecret();
+    const url = i => `/p/${u.tg_id}/${i.id}/${i.photo_ver}/${photoKey(secret, u.tg_id, i.id, i.photo_ver)}`;
+    const [items, bought] = await Promise.all([db.listItems(u.tg_id), db.listBought(u.tg_id, cfg.maxBought)]);
     return {
       consent: true,
       user: { name: u.first_name },
       settings: { digest: !!u.digest_on, weekAmount: u.week_amount || null },
-      items: db.listItems(u.tg_id).map(i => ({
+      items: items.map(i => ({
         id: i.id, name: i.name, price: i.price, saved: i.saved, zone: i.zone, icon: i.icon, tint: i.tint,
-        bg: i.bg, ln: i.ln, fit: i.fit, link: i.link, photo: i.has_photo ? photoUrl(u.tg_id, i) : ''
+        bg: i.bg, ln: i.ln, fit: i.fit, link: i.link, photo: i.has_photo ? url(i) : ''
       })),
-      bought: db.listBought(u.tg_id, cfg.maxBought),
+      bought,
       limits: { items: cfg.maxItems }
     };
   }
 
   const asArr = (v, max) => (Array.isArray(v) ? v.slice(0, max) : []);
   const asId = v => (Number.isSafeInteger(v) && v > 0 && v <= 2147483647 ? v : null);
+  const parseJson = async (request, max) => {
+    try { return JSON.parse((await readBody(request, max)).toString('utf8') || '{}'); } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(400, 'json'); }
+  };
 
-  async function api(req, res, url) {
-    const m = req.method;
+  async function api(request, url) {
+    const m = request.method;
     const p = url.pathname;
-    const u = authUser(req);
+    const u = await authUser(request);
 
     if (m === 'GET' && p === '/api/state') {
-      if (!u.consent_at) return json(res, 200, { consent: false, policy: '/policy' });
-      return json(res, 200, stateOf(u));
+      if (!u.consent_at) return json(200, { consent: false, policy: '/policy' });
+      return json(200, await stateOf(u));
     }
     if (m === 'POST' && p === '/api/consent') {
-      if (!u.consent_at) db.setConsent(u.tg_id, 'app');
-      return json(res, 200, { ok: true });
+      if (!u.consent_at) await db.setConsent(u.tg_id, 'app');
+      return json(200, { ok: true });
     }
     if (m === 'POST' && p === '/api/delete_me') {
-      db.deleteUser(u.tg_id);
-      return json(res, 200, { ok: true });
+      await db.deleteUser(u.tg_id);
+      return json(200, { ok: true });
     }
     needConsent(u);
 
-    if (m === 'POST' && p === '/api/wipe') { db.wipe(u.tg_id); return json(res, 200, { ok: true }); }
+    if (m === 'POST' && p === '/api/wipe') { await db.wipe(u.tg_id); return json(200, { ok: true }); }
 
     if (m === 'POST' && p === '/api/settings') {
-      const b = JSON.parse((await readBody(req, 4096)).toString('utf8') || '{}');
+      const b = await parseJson(request, 4096);
       const patch = {};
       if (typeof b.digest === 'boolean') patch.digest = b.digest;
       if (b.weekAmount === null) patch.weekAmount = null;
@@ -160,136 +183,119 @@ export function createApp(cfg, { fetchFn } = {}) {
         if (!Number.isSafeInteger(b.weekAmount) || b.weekAmount < 1 || b.weekAmount > 10000000) throw new HttpError(400, 'amount');
         patch.weekAmount = b.weekAmount;
       }
-      db.setSettings(u.tg_id, patch);
-      return json(res, 200, { ok: true });
+      await db.setSettings(u.tg_id, patch);
+      return json(200, { ok: true });
     }
 
     if (m === 'POST' && p === '/api/sync') {
-      if (!/^application\/json/i.test(req.headers['content-type'] || '')) throw new HttpError(415, 'type');
+      if (!/^application\/json/i.test(request.headers.get('content-type') || '')) throw new HttpError(415, 'type');
       let b;
-      try { b = JSON.parse((await readBody(req, MAX_JSON)).toString('utf8')); } catch { throw new HttpError(400, 'json'); }
-      const upsert = asArr(b.upsert, cfg.maxItems);
+      try { b = JSON.parse((await readBody(request, MAX_JSON)).toString('utf8')); } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(400, 'json'); }
+      if (!b || typeof b !== 'object') throw new HttpError(400, 'json');
       const clean = [];
-      for (const raw of upsert) { const r = cleanItem(raw); if (r.err) throw new HttpError(400, 'item'); clean.push(r.v); }
-      db.tx(() => {
-        const rem = asArr(b.remove, 200).map(asId).filter(Boolean);
-        for (const id of rem) db.removeItem(u.tg_id, id);
-        for (const it of clean) {
-          if (!db.getItem(u.tg_id, it.id) && db.countItems(u.tg_id) >= cfg.maxItems) throw new HttpError(409, 'limit');
-          db.upsertItem(u.tg_id, it);
-        }
-        const order = asArr(b.order, 200).map(asId).filter(Boolean);
-        if (order.length) db.setOrder(u.tg_id, order);
-        for (const raw of asArr(b.boughtAdd, 20)) { const bb = cleanBought(raw); if (bb) db.addBought(u.tg_id, bb); }
-        for (const at of asArr(b.boughtRemove, 20)) if (Number.isSafeInteger(at)) db.removeBought(u.tg_id, at);
-        db.trimBought(u.tg_id, cfg.maxBought);
-      });
-      return json(res, 200, { ok: true });
+      for (const raw of asArr(b.upsert, cfg.maxItems)) { const r = cleanItem(raw); if (r.err) throw new HttpError(400, 'item'); clean.push(r.v); }
+      try {
+        await db.applySync(u.tg_id, {
+          remove: asArr(b.remove, 200).map(asId).filter(Boolean),
+          upserts: clean,
+          order: asArr(b.order, 200).map(asId).filter(Boolean),
+          boughtAdd: asArr(b.boughtAdd, 20).map(cleanBought).filter(Boolean),
+          boughtRemove: asArr(b.boughtRemove, 20).filter(Number.isSafeInteger),
+          maxItems: cfg.maxItems,
+          maxBought: cfg.maxBought
+        });
+      } catch (e) { if (e instanceof LimitError) throw new HttpError(409, 'limit'); throw e; }
+      return json(200, { ok: true });
     }
 
     let mm;
     if ((mm = p.match(/^\/api\/photo\/(\d{1,10})$/))) {
       const id = Number(mm[1]);
-      if (!db.getItem(u.tg_id, id)) throw new HttpError(404, 'item');
+      const it = await db.getItem(u.tg_id, id);
+      if (!it) throw new HttpError(404, 'item');
       if (m === 'PUT') {
-        const buf = await readBody(req, MAX_PHOTO);
+        const buf = await readBody(request, MAX_PHOTO);
         if (!isJpeg(buf)) throw new HttpError(415, 'jpeg');
-        db.setPhoto(u.tg_id, id, buf);
-        return json(res, 200, { ok: true, photo: photoUrl(u.tg_id, db.getItem(u.tg_id, id)) });
+        await db.setPhoto(u.tg_id, id, buf);
+        const now = await db.getItem(u.tg_id, id);
+        return json(200, { ok: true, photo: `/p/${u.tg_id}/${id}/${now.photo_ver}/${photoKey(await photoSecret(), u.tg_id, id, now.photo_ver)}` });
       }
-      if (m === 'DELETE') { db.clearPhoto(u.tg_id, id); return json(res, 200, { ok: true }); }
+      if (m === 'DELETE') { await db.clearPhoto(u.tg_id, id); return json(200, { ok: true }); }
     }
     throw new HttpError(404, 'not-found');
   }
 
-  // ---------- /claim ----------
-  const claimOpen = () => !S.token && !fs.existsSync(tokenFile) && Date.now() - S.startedAt < cfg.claimMinutes * 60000 && !!cfg.claimCode && S.claimFails < 5;
-  const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
-
-  async function claim(req, res, ip) {
-    if (!claimOpen()) return send(res, 404, 'Not found');
-    if (!isHttps(req) && !process.env.WW_ALLOW_HTTP_CLAIM) return send(res, 400, 'Открой страницу по https, иначе токен уйдёт открытым текстом.');
-    if (!claimLimit('c' + ip)) return send(res, 429, 'Слишком часто');
-    if (req.method === 'GET') return html(res, 200, claimForm());
-    if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
-    const body = new URLSearchParams((await readBody(req, 4096)).toString('utf8'));
-    const code = body.get('code') || '', token = (body.get('token') || '').trim();
-    if (!same(code, cfg.claimCode)) { S.claimFails++; return html(res, 403, claimForm({ error: 'Код не подошёл.' })); }
-    if (!TOKEN_RE.test(token)) return html(res, 400, claimForm({ error: 'Токен выглядит неправильно. Нужен вид 123456789:AA…' }));
-    let me;
-    try { me = await adoptToken(token); } catch { return html(res, 400, claimForm({ error: 'Telegram не принял этот токен.' })); }
-    fs.mkdirSync(cfg.dataDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(tokenFile, token, { mode: 0o600 });
-    try { fs.chmodSync(tokenFile, 0o600); } catch { /* ok */ }
-    if (cfg.webappUrl) {
-      try { await tg.call('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Тропа', web_app: { url: cfg.webappUrl } } }); } catch { /* не критично */ }
-      try { await tg.call('setMyCommands', { commands: [
-        { command: 'start', description: 'Начать' }, { command: 'week', description: 'Сводка за неделю сейчас' },
-        { command: 'digest_off', description: 'Выключить сводку' }, { command: 'delete_me', description: 'Удалить все мои данные' }] }); } catch { /* не критично */ }
-    }
-    log('claim-done');
-    return html(res, 200, claimDone(me.username));
+  // ---------- маршруты ----------
+  async function flush() {
+    try { await outboxTick({ db, tg, log }); } catch (e) { log('outbox-error', e && e.message); }
   }
 
-  // ---------- сервер ----------
-  const server = http.createServer(async (req, res) => {
+  async function route(request, ctx) {
+    const url = new URL(request.url);
+    const p = url.pathname;
+    const ip = request.headers.get('cf-connecting-ip') || 'local';
+    if (!ipLimit(ip)) return send(429, 'Too many requests');
+
+    // Webhook от Telegram. Подлинность: секрет в заголовке, который мы сами задали в setWebhook.
+    if (p === '/tg') {
+      if (request.method !== 'POST') return send(405, 'Method not allowed');
+      if (!token) return send(503, 'starting');
+      if (!same(request.headers.get('x-telegram-bot-api-secret-token') || '', await webhookSecret())) return send(401, 'no');
+      let upd;
+      try { upd = JSON.parse((await readBody(request, MAX_UPDATE)).toString('utf8')); } catch (e) { if (e instanceof HttpError) throw e; return send(400, 'bad json'); }
+      await loadBase();
+      try { await bot.handleUpdate(upd); } catch (e) { log('update-error', e && e.message); }
+      ctx.waitUntil(flush());
+      return send(200, 'ok');
+    }
+
+    if (p === '/health') {
+      await loadBase(url.origin);
+      await ensureSetup();
+      return json(200, { status: !token ? 'waiting-token' : S.setupKey ? 'ok' : 'setup-pending', bot: S.botName || null });
+    }
+    if ((request.method === 'GET' || request.method === 'HEAD') && (p === '/' || p === '/index.html')) {
+      await loadBase(url.origin);
+      ctx.waitUntil(ensureSetup());
+      return send(200, request.method === 'HEAD' ? null : indexHtml, 'text/html; charset=utf-8', { 'content-security-policy': csp });
+    }
+    if (request.method === 'GET' && p === '/policy') return html(200, policyPage(cfg));
+
+    let mm;
+    if (request.method === 'GET' && (mm = p.match(/^\/p\/(\d{1,15})\/(\d{1,10})\/(\d{1,10})\/([0-9a-f]{32})$/))) {
+      const [tgId, id, ver, k] = [Number(mm[1]), Number(mm[2]), Number(mm[3]), mm[4]];
+      if (!same(k, photoKey(await photoSecret(), tgId, id, ver))) return send(404, 'Not found');
+      const it = await db.getItem(tgId, id);
+      const buf = it && it.photo_ver === ver ? await db.getPhoto(tgId, id) : null;
+      if (!buf) return send(404, 'Not found');
+      return send(200, buf, 'image/jpeg', { 'cache-control': 'private, max-age=31536000, immutable', 'content-security-policy': "default-src 'none'" });
+    }
+    if (p.startsWith('/api/')) return api(request, url);
+    return send(404, 'Not found');
+  }
+
+  async function handle(request, ctx = { waitUntil() {} }) {
     const t0 = Date.now();
-    let status = 0;
-    const origEnd = res.end.bind(res);
-    res.end = (...a) => { status = res.statusCode; return origEnd(...a); };
-    res.on('finish', () => log(req.method, new URL(req.url, 'http://x').pathname.replace(/^\/p\/.*/, '/p/…'), status, Date.now() - t0 + 'ms'));
-    try {
-      const url = new URL(req.url, 'http://x');
-      const p = url.pathname;
-      const ip = clientIp(req);
-      if (!ipLimit(ip)) return send(res, 429, 'Too many requests');
-
-      if (p === '/health') return json(res, 200, { status: S.token ? 'ok' : 'waiting-token', bot: S.botName || null, outbox: db.outboxStats() });
-      if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/' || p === '/index.html')) {
-        return send(res, 200, req.method === 'HEAD' ? '' : indexHtml, 'text/html; charset=utf-8', { 'content-security-policy': csp });
-      }
-      if (req.method === 'GET' && p === '/policy') return html(res, 200, policyPage(cfg));
-      if (p === '/claim') return await claim(req, res, ip);
-
-      let mm;
-      if (req.method === 'GET' && (mm = p.match(/^\/p\/(\d{1,15})\/(\d{1,10})\/(\d{1,10})\/([0-9a-f]{32})$/))) {
-        const [tgId, id, ver, k] = [Number(mm[1]), Number(mm[2]), Number(mm[3]), mm[4]];
-        const want = photoKey(tgId, id, ver);
-        if (!crypto.timingSafeEqual(Buffer.from(k), Buffer.from(want))) return send(res, 404, 'Not found');
-        const it = db.getItem(tgId, id);
-        const buf = it && it.photo_ver === ver ? db.getPhoto(tgId, id) : null;
-        if (!buf) return send(res, 404, 'Not found');
-        return send(res, 200, buf, 'image/jpeg', { 'cache-control': 'private, max-age=31536000, immutable', 'content-security-policy': "default-src 'none'" });
-      }
-      if (p.startsWith('/api/')) return await api(req, res, url);
-      return send(res, 404, 'Not found');
-    } catch (e) {
-      if (e instanceof HttpError) return json(res, e.status, { error: e.code });
-      log('error', e && e.message);
-      return json(res, 500, { error: 'server' });
+    let res;
+    try { res = await route(request, ctx); }
+    catch (e) {
+      if (e instanceof HttpError) res = json(e.status, { error: e.code });
+      else { log('error', e && e.message); res = json(500, { error: 'server' }); }
     }
-  });
-  server.requestTimeout = 30000;
-  server.headersTimeout = 15000;
+    log(request.method, new URL(request.url).pathname.replace(/^\/p\/.*/, '/p/…'), res.status, Date.now() - t0 + 'ms');
+    return res;
+  }
 
-  // ---------- фоновые циклы ----------
-  const timers = [];
-  let polling = null;
-  async function start() {
-    await tokenWatch();
-    timers.push(setInterval(() => { tokenWatch().catch(() => {}); }, 3000));
-    timers.push(setInterval(() => { outboxTick({ db, tg, log }).catch(() => {}); }, 800));
-    timers.push(setInterval(() => { try { digestTick({ db, cfg }); db.outboxPrune(); db.kvPrune(); } catch (e) { log('digest-error', e.message); } }, 60000));
-    polling = startPolling({ db, tg, bot, getToken: () => S.token, log });
-    await new Promise(r => server.listen(cfg.port, cfg.host, r));
-    return server.address().port;
+  /** Раз в минуту (cron): повторить застрявшие сообщения, в окне сводки разослать её, раз в час прибраться. */
+  async function tick() {
+    if (!token) return;
+    await loadBase();
+    await ensureSetup();
+    await outboxTick({ db, tg, log });
+    const nowMs = Date.now();
+    if (inDigestWindow(cfg, nowMs) && await digestTick({ db, cfg, nowMs })) await outboxTick({ db, tg, log });
+    if (new Date(nowMs).getUTCMinutes() === 0) { await db.outboxPrune(); await db.kvPrune(); }
   }
-  async function stop() {
-    timers.forEach(clearInterval);
-    if (polling) polling.stop();
-    await new Promise(r => server.close(r));
-    server.closeAllConnections?.();
-    db.close();
-  }
-  return { server, db, bot, tg, state: S, start, stop, adoptToken, tokenWatch };
+
+  return { handle, tick, bot, tg, db, state: S, ensureSetup, loadBase };
 }

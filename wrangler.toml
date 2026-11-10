@@ -1,0 +1,23 @@
+name = "wwwant"
+main = "server/worker.js"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# База создаётся сама при первом деплое (автосоздание ресурсов в Wrangler), ID вписывать не нужно.
+[[d1_databases]]
+binding = "DB"
+database_name = "wwwant"
+
+# Раз в минуту: повторы застрявших сообщений и воскресная сводка.
+[triggers]
+crons = ["* * * * *"]
+
+# Не секретное. Меняется правкой этого файла прямо на GitHub, деплой пройдёт сам.
+# Токен бота здесь НЕ хранится: он задаётся секретом BOT_TOKEN в панели Cloudflare.
+[vars]
+OPERATOR_NAME = ""
+OPERATOR_INN = ""
+OPERATOR_CONTACT = ""
+HOSTING_NAME = "Cloudflare, Inc."
+POLICY_DRAFT = "1"
+# WEBAPP_URL = "https://ваш-домен"   # нужен только если подключите свой домен; иначе берётся адрес Worker

@@ -1,9 +1,0 @@
-[Unit]
-Description=wwwant: проверка обновлений каждые 3 минуты
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=3min
-
-[Install]
-WantedBy=timers.target

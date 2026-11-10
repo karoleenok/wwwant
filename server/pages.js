@@ -28,7 +28,7 @@ export function policyPage(cfg) {
   const o = cfg.operator;
   const who = o.name ? esc(o.name) + (o.inn ? ', ИНН ' + esc(o.inn) : '') : '[имя или название оператора, ИНН]';
   const contact = o.contact ? esc(o.contact) : '[почта для обращений]';
-  const host = o.hosting ? esc(o.hosting) : '[хостинг-провайдер, Россия]';
+  const host = o.hosting ? esc(o.hosting) : '[хостинг-провайдер и страна размещения]';
   const draft = cfg.policyDraft ? '<div class="draft"><b>Черновик.</b> Текст ещё не проверял юрист. Перед публичным запуском его нужно утвердить.</div>' : '';
   return page('Политика обработки данных', `
 ${draft}
@@ -54,7 +54,7 @@ ${draft}
 <p>На основании вашего согласия. Вы даёте его кнопкой «Принимаю» в боте или в приложении.</p>
 
 <h2>Где хранятся</h2>
-<p>На сервере в России (${host}). Сообщения бота проходят через Telegram как платформу доставки.</p>
+<p>Данные хранятся у хостинг-провайдера: ${host}. Сообщения бота проходят через Telegram как платформу доставки.</p>
 
 <h2>Сколько храним</h2>
 <p>Пока вы пользуетесь сервисом. После удаления данные пропадают с рабочей базы сразу, из резервных копий уходят в течение 14 дней.</p>
@@ -70,21 +70,4 @@ ${draft}
 <h2>Ваши права</h2>
 <p>Вы можете запросить, какие данные мы о вас храним, исправить их, потребовать удаления и отозвать согласие. Пишите на ${contact}.</p>
 `);
-}
-
-export function claimForm({ error = '', codeRequired = true } = {}) {
-  return page('Подключение бота', `
-<h1>Подключение бота</h1>
-<p>Вставь сюда токен из @BotFather. Он сохранится только на этом сервере и больше нигде не появится.</p>
-${error ? `<p class="err" role="alert">${esc(error)}</p>` : ''}
-<form method="post" action="/claim" autocomplete="off">
-${codeRequired ? '<label for="code">Код из установщика</label><input id="code" name="code" required autocomplete="off" autocapitalize="off" spellcheck="false">' : ''}
-<label for="token">Токен бота</label><input id="token" name="token" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="123456789:AA…">
-<button type="submit">Подключить</button>
-</form>
-<p class="note">После подключения эта страница пропадёт.</p>`);
-}
-
-export function claimDone(botName) {
-  return page('Бот подключён', `<h1>Готово</h1><p>Бот ${esc(botName ? '@' + botName : '')} подключён. Открой его в Telegram и нажми Start.</p>`);
 }

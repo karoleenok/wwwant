@@ -42,15 +42,23 @@ export function isDigestTime(cfg, nowMs, user) {
   return !user.last_digest_at || nowMs - user.last_digest_at > 6 * 86400000;
 }
 
-export function digestTick({ db, cfg, nowMs = Date.now() }) {
+/** Быстрая проверка без базы: сейчас вообще идёт окно сводки? Нужна, чтобы cron не ходил в базу зря. */
+export function inDigestWindow(cfg, nowMs) {
+  const d = new Date(nowMs + cfg.digest.tzOffset * 3600000);
+  if (d.getUTCDay() !== cfg.digest.dow) return false;
+  const h = d.getUTCHours();
+  return h >= cfg.digest.hour && h < cfg.digest.hour + 4;
+}
+
+export async function digestTick({ db, cfg, nowMs = Date.now() }) {
   let sent = 0;
-  for (const u of db.digestCandidates()) {
+  for (const u of await db.digestCandidates()) {
     if (!isDigestTime(cfg, nowMs, u)) continue;
-    const items = db.listItems(u.tg_id);
+    const items = await db.listItems(u.tg_id);
     if (!items.length) continue;
     const d = buildDigest(u, items, cfg.webappUrl);
-    db.enqueue(u.tg_id, 'sendMessage', { chat_id: u.tg_id, text: d.text, reply_markup: d.reply_markup });
-    db.setDigestSent(u.tg_id, nowMs);
+    await db.enqueue(u.tg_id, 'sendMessage', { chat_id: u.tg_id, text: d.text, reply_markup: d.reply_markup });
+    await db.setDigestSent(u.tg_id, nowMs);
     sent++;
   }
   return sent;

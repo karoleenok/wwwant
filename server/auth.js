@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
 /**
  * Проверка Telegram initData по HMAC (https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).

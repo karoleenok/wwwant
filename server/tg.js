@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+
 export class TgError extends Error {
   constructor(code, description, retryAfter = 0) {
     super(description);
