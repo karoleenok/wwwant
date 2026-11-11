@@ -42,10 +42,14 @@ export function makeBot({ db, tg, cfg, limiter }) {
     if (url()) rows.push([{ text: 'Политика обработки данных', url: url() + '/policy' }]);
     return rows;
   };
-  const askConsent = to => send(to,
-    'Привет. Это тропа покупок: складываешь сюда, что хочется, и копишь на это по шагам.\n\n' +
-    'Чтобы хранить твои вещи и суммы, нужно согласие на обработку данных. Что храним и как всё стереть, написано в политике.',
-    consentKb());
+  // Если человек уже получил приветственный пост, вступление не повторяем: остаётся только про данные.
+  const CONSENT_DOCS = 'Чтобы хранить твои вещи и суммы, нужно согласие на обработку данных. Что храним и как всё стереть, написано в политике.';
+  const CONSENT_INTRO = 'Привет. Это тропа покупок: складываешь сюда, что хочется, и копишь на это по шагам.\n\n';
+  async function askConsent(to) {
+    const w = await getWelcome();
+    const seen = !!w && (await db.kvGet('wel:' + to)) === String(w.at);
+    await send(to, (seen ? '' : CONSENT_INTRO) + CONSENT_DOCS, consentKb());
+  }
 
   async function sendMenuOnce(tgId) {
     const u = await db.getUser(tgId);
