@@ -5,6 +5,23 @@ import { buildDigest, pickTarget } from './digest.js';
 import { isJpeg, ZONE_NAMES } from './validate.js';
 
 const DRAFT_TTL = 30 * 60 * 1000;
+const FB_TTL = 15 * 60 * 1000;          // сколько ждём текст отзыва после /feedback
+const FB_MAP_TTL = 30 * 86400000;       // сколько можно отвечать на отзыв
+const NP_TTL = 60 * 60 * 1000;          // черновик рассылки
+const NP_MAX = 10;                      // сообщений в одном посте (альбом считается по штукам)
+
+export const USER_COMMANDS = [
+  { command: 'start', description: 'Начать' },
+  { command: 'week', description: 'Сводка за неделю сейчас' },
+  { command: 'feedback', description: 'Обратная связь' },
+  { command: 'digest_off', description: 'Выключить сводку' },
+  { command: 'delete_me', description: 'Удалить все мои данные' }
+];
+export const ADMIN_COMMANDS = [
+  { command: 'stats', description: 'Статистика' },
+  { command: 'new', description: 'Новый пост для всех' },
+  ...USER_COMMANDS
+];
 const rid = () => 1 + crypto.randomInt(2147483000);
 
 export function makeBot({ db, tg, cfg, limiter }) {
@@ -41,6 +58,62 @@ export function makeBot({ db, tg, cfg, limiter }) {
   };
   const setDraft = (id, d) => db.kvSet('draft:' + id, JSON.stringify({ ...d, exp: Date.now() + DRAFT_TTL }));
   const clearDraft = id => db.kvDel('draft:' + id);
+
+  // ---------- админ ----------
+  const adminId = async () => Number(await db.kvGet('admin_id')) || 0;
+  /** Админ определяется по username из ADMIN_USERNAMES один раз, дальше только по числовому id. */
+  async function isAdmin(from, username) {
+    const id = await adminId();
+    if (id) return id === from;
+    if (username && cfg.adminUsernames.includes(String(username).toLowerCase())) {
+      await db.kvAdd('admin_id', from);                 // кто успел первым с нужным username, тот и админ
+      if ((await adminId()) !== from) return false;
+      await db.enqueue(from, 'setMyCommands', { commands: ADMIN_COMMANDS, scope: { type: 'chat', chat_id: from } });
+      return true;
+    }
+    return false;
+  }
+  const who = (name, username) => `${name || 'без имени'}${username ? ' (@' + username + ')' : ''}`;
+  async function notifyJoin({ id, name, username }) {
+    const a = await adminId();
+    if (!a || a === id) return;
+    await send(a, `Новый участник: ${who(name, username)}. Всего: ${await db.consentedCount()}.`);
+  }
+  async function statsText() {
+    const s = await db.stats();
+    return [
+      `Участников: ${s.consented}${s.blocked ? ` (заблокировали бота: ${s.blocked})` : ''}`,
+      `Пришли за сутки: ${s.d1}, за неделю: ${s.d7}`,
+      `Вещей на тропе: ${s.items}, куплено: ${s.bought}`,
+      `Сводка включена у ${s.digest}`,
+      `Очередь отправки: ждёт ${s.pending}, не доставлено ${s.failed}`
+    ].join('\n');
+  }
+  const getNp = async id => {
+    const raw = await db.kvGet('np:' + id);
+    if (!raw) return null;
+    try { const d = JSON.parse(raw); return d.exp > Date.now() ? d : null; } catch { return null; }
+  };
+  const setNp = (id, d) => db.kvSet('np:' + id, JSON.stringify({ ...d, exp: Date.now() + NP_TTL }));
+  const npKb = [[{ text: 'Предпросмотр', callback_data: 'np:prev' }], [{ text: 'Отмена', callback_data: 'np:cancel' }]];
+
+  async function startFeedback(from) {
+    await db.kvSet('fb:' + from, String(Date.now() + FB_TTL));
+    await send(from, 'Напиши, что думаешь о тропе: идея, баг, что не нравится. Можно текст, скриншот или голосовое. Я передам, ответ придёт сюда. Отменить: /start.');
+  }
+  async function passFeedback(from, msg, name, username) {
+    const a = await adminId();
+    if (!a) { await send(from, 'Пока некому передать. Попробуй чуть позже.'); return; }
+    try {
+      const head = await tg.call('sendMessage', { chat_id: a, text: `Отзыв от ${who(name, username)}.\nОтветь на это сообщение или на следующее, ответ уйдёт ему.` });
+      const copy = await tg.call('copyMessage', { chat_id: a, from_chat_id: from, message_id: msg.message_id });
+      const exp = Date.now() + FB_MAP_TTL;
+      for (const m of [head, copy]) if (m && m.message_id) await db.kvSet('fbmap:' + m.message_id, `${from}:${exp}`);
+      await db.kvDel('fb:' + from);
+      await send(from, 'Передал. Если нужно, отвечу здесь.');
+    } catch { await send(from, 'Не получилось передать. Напиши ещё раз чуть позже.'); }
+  }
+
 
   async function fetchPhoto(fileId) {
     try {
@@ -110,11 +183,43 @@ export function makeBot({ db, tg, cfg, limiter }) {
     const user = await db.ensureUser(from, msg.from.first_name || '');
     const text = String(msg.text ?? msg.caption ?? '').slice(0, 2000);
     const cmd = text.startsWith('/') ? text.split(/[\s@]/)[0].toLowerCase() : '';
+    const admin = await isAdmin(from, msg.from.username);
 
     if (cmd === '/start' || cmd === '/help') {
       if (!user.consent_at) { await askConsent(from); return; }
-      await send(from, 'Пришли ссылку на товар и цену, например:\nЛампа 4300 https://ozon.ru/t/…\n\nКоманды: /week сводка сейчас, /digest_off и /digest_on включают и выключают сводку, /delete_me стирает всё.', openKb());
+      await db.kvDel('fb:' + from);
+      if (/^\/start(@\w+)?\s+feedback\b/i.test(text)) { await startFeedback(from); return; }
+      await send(from, 'Пришли ссылку на товар и цену, например:\nЛампа 4300 https://ozon.ru/t/…\n\nКоманды: /week сводка сейчас, /feedback написать мне, /digest_off и /digest_on включают и выключают сводку, /delete_me стирает всё.', openKb());
       return;
+    }
+    if (admin && cmd === '/stats') { await send(from, await statsText()); return; }
+    if (admin && cmd === '/new') {
+      await setNp(from, { ids: [] });
+      await send(from, `Пришли пост: текст, картинки, всё что нужно, можно несколькими сообщениями (до ${NP_MAX}). Премиум-эмодзи подойдут. Потом нажми «Предпросмотр».`, [[{ text: 'Отмена', callback_data: 'np:cancel' }]]);
+      return;
+    }
+    // ответ админа на отзыв: уходит тому, кто писал
+    if (admin && msg.reply_to_message) {
+      const m = String(await db.kvGet('fbmap:' + msg.reply_to_message.message_id) || '').split(':').map(Number);
+      if (m[0] && m[1] > Date.now()) {
+        await send(m[0], 'Ответ от создателя:');
+        await db.enqueue(m[0], 'copyMessage', { chat_id: m[0], from_chat_id: from, message_id: msg.message_id });
+        await send(from, 'Отправил.');
+        return;
+      }
+    }
+    // сборка поста для рассылки
+    if (admin && !cmd) {
+      const np = await getNp(from);
+      if (np) {
+        if (np.ids.length >= NP_MAX) { await send(from, `Уже ${NP_MAX} сообщений, это максимум. Нажми «Предпросмотр».`, npKb); return; }
+        np.ids.push(msg.message_id);
+        const again = msg.media_group_id && np.group === msg.media_group_id;   // альбом подтверждаем один раз
+        np.group = msg.media_group_id || '';
+        await setNp(from, np);
+        if (!again) await send(from, `Добавил (${np.ids.length}). Можно прислать ещё или нажать «Предпросмотр».`, npKb);
+        return;
+      }
     }
     if (cmd === '/delete_me') {
       await send(from, 'Удалю всё: вещи, суммы, историю покупок и твою учётку. Вернуть будет нельзя.', [[{ text: 'Удалить всё', callback_data: 'delme:yes' }, { text: 'Оставить', callback_data: 'delme:no' }]]);
@@ -123,9 +228,12 @@ export function makeBot({ db, tg, cfg, limiter }) {
     if (!user.consent_at) { await askConsent(from); return; }
 
     if (cmd === '/week') { await weekNow(from); return; }
+    if (cmd === '/feedback') { await startFeedback(from); return; }
     if (cmd === '/digest_off') { await db.setSettings(from, { digest: false }); await send(from, 'Сводку по воскресеньям выключил. Включить снова: /digest_on.'); return; }
     if (cmd === '/digest_on') { await db.setSettings(from, { digest: true }); await send(from, 'Сводка включена. Буду писать раз в неделю, по воскресеньям вечером.'); return; }
     if (cmd) return;
+
+    if (Number(await db.kvGet('fb:' + from) || 0) > Date.now()) { await passFeedback(from, msg, user.first_name, msg.from.username); return; }
 
     const await_ = Number(await db.kvGet('await_amt:' + from) || 0);
     if (await_ > Date.now()) {
@@ -149,7 +257,9 @@ export function makeBot({ db, tg, cfg, limiter }) {
 
     if (kind === 'consent') {
       if (a === 'yes') {
+        const first = !user.consent_at;
         await db.setConsent(from, 'bot');
+        if (first) await notifyJoin({ id: from, name: user.first_name, username: cb.from.username });
         await answer(from, cb.id);
         await dropButtons(from, cb.message);
         await sendMenuOnce(from);
@@ -171,6 +281,32 @@ export function makeBot({ db, tg, cfg, limiter }) {
         await answer(from, cb.id);
         await dropButtons(from, cb.message);
         await send(from, 'Ок, ничего не трогаю.');
+      }
+      return;
+    }
+    if (kind === 'np') {
+      await answer(from, cb.id);
+      if (!(await isAdmin(from, cb.from.username))) return;
+      const np = await getNp(from);
+      if (a === 'cancel') { await db.kvDel('np:' + from); await dropButtons(from, cb.message); await send(from, 'Отменил.'); return; }
+      if (!np || !np.ids.length) { await send(from, 'Пост пустой. Пришли текст или картинку.'); return; }
+      if (a === 'prev') {
+        await dropButtons(from, cb.message);
+        try { await tg.call('copyMessages', { chat_id: from, from_chat_id: from, message_ids: np.ids }); }
+        catch { await send(from, 'Не получилось показать предпросмотр. Пришли пост заново: /new.'); return; }
+        const n = (await db.recipients(from)).length;
+        await send(from, `Так увидят получатели. Отправить ${n} ${n % 10 === 1 && n % 100 !== 11 ? 'человеку' : 'людям'}?`,
+          [[{ text: 'Отправить всем', callback_data: 'np:send' }], [{ text: 'Собрать заново', callback_data: 'np:redo' }, { text: 'Отмена', callback_data: 'np:cancel' }]]);
+        return;
+      }
+      if (a === 'redo') { await dropButtons(from, cb.message); await setNp(from, { ids: [] }); await send(from, 'Ок, пришли пост заново.', [[{ text: 'Отмена', callback_data: 'np:cancel' }]]); return; }
+      if (a === 'send') {
+        await dropButtons(from, cb.message);
+        await db.kvDel('np:' + from);                  // повторное нажатие уже ничего не отправит
+        const list = await db.recipients(from);
+        for (const to of list) await db.enqueue(to, 'copyMessages', { chat_id: to, from_chat_id: from, message_ids: np.ids });
+        await send(from, `Поставил в очередь: ${list.length}. Доходит не сразу, около 15 сообщений в минуту. Ход смотри в /stats.`);
+        return;
       }
       return;
     }
@@ -237,5 +373,5 @@ export function makeBot({ db, tg, cfg, limiter }) {
     if (u.my_chat_member) return onMyChatMember(u.my_chat_member);
   }
 
-  return { handleUpdate, pickTarget };
+  return { handleUpdate, pickTarget, notifyJoin };
 }

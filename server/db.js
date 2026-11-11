@@ -90,9 +90,32 @@ export function makeDb(d1) {
     async kvPrune() {
       await batch([
         ["DELETE FROM kv WHERE k LIKE 'undo:%' AND CAST(substr(v,1,instr(v,':')-1) AS INTEGER) < ?", [now()]],
-        ["DELETE FROM kv WHERE k LIKE 'draft:%' AND CAST(json_extract(v,'$.exp') AS INTEGER) < ?", [now()]]
+        ["DELETE FROM kv WHERE k LIKE 'draft:%' AND CAST(json_extract(v,'$.exp') AS INTEGER) < ?", [now()]],
+        ["DELETE FROM kv WHERE k LIKE 'fbmap:%' AND CAST(substr(v,instr(v,':')+1) AS INTEGER) < ?", [now()]]
       ]);
     },
+    // ---- админ-сторона
+    async stats() {
+      const n = async (sql, ...a) => (await first(sql, ...a)).n;
+      const t = now();
+      const o = Object.fromEntries((await A.outboxStats()).map(r => [r.status, r.n]));
+      return {
+        users: await n('SELECT COUNT(*) AS n FROM users'),
+        consented: await n('SELECT COUNT(*) AS n FROM users WHERE consent_at IS NOT NULL'),
+        blocked: await n('SELECT COUNT(*) AS n FROM users WHERE consent_at IS NOT NULL AND blocked=1'),
+        d1: await n('SELECT COUNT(*) AS n FROM users WHERE consent_at>=?', t - 86400000),
+        d7: await n('SELECT COUNT(*) AS n FROM users WHERE consent_at>=?', t - 7 * 86400000),
+        items: await n('SELECT COUNT(*) AS n FROM items'),
+        bought: await n('SELECT COUNT(*) AS n FROM bought'),
+        digest: await n('SELECT COUNT(*) AS n FROM users WHERE consent_at IS NOT NULL AND digest_on=1 AND blocked=0'),
+        pending: o.pending || 0, failed: o.failed || 0
+      };
+    },
+    async consentedCount() { return (await first('SELECT COUNT(*) AS n FROM users WHERE consent_at IS NOT NULL')).n; },
+    async recipients(exceptId) { return (await all('SELECT tg_id FROM users WHERE consent_at IS NOT NULL AND blocked=0 AND tg_id<>? ORDER BY tg_id', exceptId)).map(r => r.tg_id); },
+    getAvatar(tg) { return A.kvGet('avatar:' + tg); },
+    setAvatar(tg, buf) { return A.kvSet('avatar:' + tg, Buffer.from(buf).toString('base64')); },
+    clearAvatar(tg) { return A.kvDel('avatar:' + tg); },
     async secret(name) {
       let v = await A.kvGet('secret:' + name);
       if (!v) {
@@ -190,7 +213,7 @@ export function makeDb(d1) {
       await batch([
         ['DELETE FROM items WHERE tg_id=?', [tg]],
         ['DELETE FROM bought WHERE tg_id=?', [tg]],
-        ['DELETE FROM kv WHERE k IN (?,?)', ['draft:' + tg, 'await_amt:' + tg]]
+        ['DELETE FROM kv WHERE k IN (?,?,?,?,?)', ['draft:' + tg, 'await_amt:' + tg, 'avatar:' + tg, 'fb:' + tg, 'np:' + tg]]
       ]);
     },
     async deleteUser(tg) {
@@ -198,7 +221,7 @@ export function makeDb(d1) {
         ['DELETE FROM items WHERE tg_id=?', [tg]],
         ['DELETE FROM bought WHERE tg_id=?', [tg]],
         ['DELETE FROM outbox WHERE tg_id=?', [tg]],
-        ['DELETE FROM kv WHERE k IN (?,?)', ['draft:' + tg, 'await_amt:' + tg]],
+        ['DELETE FROM kv WHERE k IN (?,?,?,?,?)', ['draft:' + tg, 'await_amt:' + tg, 'avatar:' + tg, 'fb:' + tg, 'np:' + tg]],
         ['DELETE FROM users WHERE tg_id=?', [tg]]
       ]);
     },

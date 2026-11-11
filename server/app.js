@@ -5,7 +5,7 @@ import { makeGate } from './limits.js';
 import { ICONS } from './icons.js';
 import { cleanItem, cleanBought, isJpeg } from './validate.js';
 import { makeTg, TgError } from './tg.js';
-import { makeBot } from './bot.js';
+import { makeBot, USER_COMMANDS, ADMIN_COMMANDS } from './bot.js';
 import { outboxTick } from './outbox.js';
 import { digestTick, inDigestWindow } from './digest.js';
 import { policyPage } from './pages.js';
@@ -13,6 +13,7 @@ import { LimitError } from './db.js';
 
 const MAX_JSON = 512 * 1024;
 const MAX_PHOTO = 200 * 1024;
+const MAX_AVATAR = 60 * 1024;
 const MAX_UPDATE = 256 * 1024;
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 
@@ -93,7 +94,7 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
   async function ensureSetup() {
     if (!token || !cfg.webappUrl) return;
     const fp = crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
-    const key = `${cfg.webappUrl}|${fp}`;
+    const key = `${cfg.webappUrl}|${fp}|cmd3`;
     if (S.setupKey === key) return;
     try {
       const me = await tg.call('getMe', {}, { timeoutMs: 15000 });
@@ -102,9 +103,9 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
         await tg.call('setWebhook', { url: cfg.webappUrl + '/tg', secret_token: await webhookSecret(), allowed_updates: ALLOWED_UPDATES, max_connections: 20 });
         try { await tg.call('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Тропа', web_app: { url: cfg.webappUrl } } }); } catch { /* не критично */ }
         try {
-          await tg.call('setMyCommands', { commands: [
-            { command: 'start', description: 'Начать' }, { command: 'week', description: 'Сводка за неделю сейчас' },
-            { command: 'digest_off', description: 'Выключить сводку' }, { command: 'delete_me', description: 'Удалить все мои данные' }] });
+          await tg.call('setMyCommands', { commands: USER_COMMANDS });
+          const adm = Number(await db.kvGet('admin_id')) || 0;
+          if (adm) await tg.call('setMyCommands', { commands: ADMIN_COMMANDS, scope: { type: 'chat', chat_id: adm } });
         } catch { /* не критично */ }
         await db.kvSet('setup', key);
         log('setup-done');
@@ -127,7 +128,8 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
     const u = verifyInitData(h.slice(4), token, cfg.initDataMaxAge);
     if (!u) throw new HttpError(401, 'auth');
     if (!(await apiLimit('u' + u.id))) throw new HttpError(429, 'slow-down');
-    return db.ensureUser(u.id, u.first_name);
+    const row = await db.ensureUser(u.id, u.first_name);
+    return { ...row, _username: u.username || '' };
   }
   const needConsent = u => { if (!u.consent_at) throw new HttpError(403, 'consent'); };
 
@@ -138,6 +140,7 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
     return {
       consent: true,
       user: { name: u.first_name },
+      avatar: (a => (a ? 'data:image/jpeg;base64,' + a : ''))(await db.getAvatar(u.tg_id)),
       settings: { digest: !!u.digest_on, weekAmount: u.week_amount || null },
       items: items.map(i => ({
         id: i.id, name: i.name, price: i.price, saved: i.saved, zone: i.zone, icon: i.icon, tint: i.tint,
@@ -164,7 +167,10 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
       return json(200, await stateOf(u));
     }
     if (m === 'POST' && p === '/api/consent') {
-      if (!u.consent_at) await db.setConsent(u.tg_id, 'app');
+      if (!u.consent_at) {
+        await db.setConsent(u.tg_id, 'app');
+        try { await bot.notifyJoin({ id: u.tg_id, name: u.first_name, username: u._username }); } catch { /* уведомление не критично */ }
+      }
       return json(200, { ok: true });
     }
     if (m === 'POST' && p === '/api/delete_me') {
@@ -207,6 +213,16 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
         });
       } catch (e) { if (e instanceof LimitError) throw new HttpError(409, 'limit'); throw e; }
       return json(200, { ok: true });
+    }
+
+    if (p === '/api/avatar') {
+      if (m === 'PUT') {
+        const buf = await readBody(request, MAX_AVATAR);
+        if (!isJpeg(buf)) throw new HttpError(415, 'jpeg');
+        await db.setAvatar(u.tg_id, buf);
+        return json(200, { ok: true });
+      }
+      if (m === 'DELETE') { await db.clearAvatar(u.tg_id); return json(200, { ok: true }); }
     }
 
     let mm;
@@ -302,7 +318,7 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
     if (!token) return;
     await loadBase();
     await ensureSetup();
-    await outboxTick({ db, tg, log });
+    await outboxTick({ db, tg, log, limit: 15 });
     const nowMs = Date.now();
     if (inDigestWindow(cfg, nowMs) && await digestTick({ db, cfg, nowMs })) await outboxTick({ db, tg, log });
     if (new Date(nowMs).getUTCMinutes() === 0) { await db.outboxPrune(); await db.kvPrune(); }

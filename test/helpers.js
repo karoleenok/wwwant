@@ -60,6 +60,8 @@ export async function fakeTelegram() {
       const done = r => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, result: r })); };
       if (method === 'getMe') return done({ id: 123456789, username: 'wwwant_test_bot' });
       if (method === 'getFile') return done({ file_path: 'photos/file_1.jpg' });
+      if (method === 'sendMessage' || method === 'copyMessage') return done({ message_id: 9000 + calls.length });
+      if (method === 'copyMessages') return done([{ message_id: 9000 + calls.length }]);
       return done(true);
     });
   });

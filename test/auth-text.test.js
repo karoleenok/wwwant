@@ -8,7 +8,7 @@ const T = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw';
 
 test('initData: верная подпись проходит', () => {
   const u = verifyInitData(signInitData({ id: 5, first_name: 'Каролина' }, T), T);
-  assert.deepEqual(u, { id: 5, first_name: 'Каролина' });
+  assert.deepEqual(u, { id: 5, first_name: 'Каролина', username: '' });
 });
 test('initData: чужой токен, подмена поля, просрочка, будущее', () => {
   const ok = signInitData({ id: 5, first_name: 'A' }, T);
