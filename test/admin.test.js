@@ -186,6 +186,7 @@ test('приветствие: выбор после предпросмотра, 
   assert.equal(q[0].reply_markup.inline_keyboard[0][0].web_app.url, 'https://x.example');
   assert.equal(q[1].method, 'sendMessage');
   assert.match(q[1].text, /согласие/);
+  assert.doesNotMatch(q[1].text, /Это тропа покупок/);            // приветствие уже всё объяснило: остаётся только про данные
   await s.msg(GUEST, '/start', {}, 'g');                          // второй /start до согласия: приветствие не дублируется
   q = toGuest(s);
   assert.equal(q.filter(x => x.method === 'copyMessage').length, 1);
@@ -259,7 +260,7 @@ test('/welcome: показать, добавить и убрать кнопку,
   assert.equal(await s.db.kvGet('welcome'), null);
   await s.msg(GUEST, '/start', {}, 'g');
   assert.equal(toGuest(s).filter(x => /^copy/.test(x.method)).length, 0);   // приветствия нет, только согласие
-  assert.ok(toGuest(s).some(x => x.method === 'sendMessage' && /согласие/.test(x.text)));
+  assert.ok(toGuest(s).some(x => x.method === 'sendMessage' && /согласие/.test(x.text) && /Это тропа покупок/.test(x.text)));   // без поста вступление на месте
 });
 
 test('приветствие: исходные сообщения удалены, админ узнаёт сразу; /delete_me даёт новое приветствие', async () => {
