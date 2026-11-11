@@ -10,3 +10,18 @@ export function makeLimiter(max, windowMs) {
     return e.n <= max;
   };
 }
+
+/**
+ * Лимит «не больше max за окно». Если у Worker есть лимитер Cloudflare (binding), считает он:
+ * счётчик общий для всех экземпляров в одной точке присутствия. Нет binding (тесты, локально)
+ * или он ответил ошибкой: падаем на счётчик в памяти, чтобы сервис не вставал из-за лимитера.
+ */
+export function makeGate(binding, max, windowMs) {
+  const local = makeLimiter(max, windowMs);
+  return async function gate(key) {
+    if (binding && typeof binding.limit === 'function') {
+      try { return (await binding.limit({ key: String(key) })).success; } catch { /* упал лимитер: считаем сами */ }
+    }
+    return local(key);
+  };
+}

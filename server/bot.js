@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { makeLimiter } from './limits.js';
+import { makeGate } from './limits.js';
 import { parseAdd, parseAmount, fmt, etaWeeks, weeksText } from './text.js';
 import { buildDigest, pickTarget } from './digest.js';
 import { isJpeg, ZONE_NAMES } from './validate.js';
@@ -7,8 +7,8 @@ import { isJpeg, ZONE_NAMES } from './validate.js';
 const DRAFT_TTL = 30 * 60 * 1000;
 const rid = () => 1 + crypto.randomInt(2147483000);
 
-export function makeBot({ db, tg, cfg }) {
-  const msgLimit = makeLimiter(30, 60000);
+export function makeBot({ db, tg, cfg, limiter }) {
+  const msgLimit = makeGate(limiter, 30, 60000);
   // Адрес мини-аппки может появиться уже после старта (берётся из адреса Worker), поэтому читаем его в момент вызова.
   const url = () => cfg.webappUrl;
   const openKb = () => (url() ? [[{ text: 'Открыть тропу', web_app: { url: url() } }]] : []);
@@ -106,7 +106,7 @@ export function makeBot({ db, tg, cfg }) {
   async function onMessage(msg) {
     if (!msg.from || msg.from.is_bot || !msg.chat || msg.chat.type !== 'private') return;
     const from = msg.from.id;
-    if (!msgLimit(from)) return;
+    if (!(await msgLimit(from))) return;
     const user = await db.ensureUser(from, msg.from.first_name || '');
     const text = String(msg.text ?? msg.caption ?? '').slice(0, 2000);
     const cmd = text.startsWith('/') ? text.split(/[\s@]/)[0].toLowerCase() : '';
@@ -143,7 +143,7 @@ export function makeBot({ db, tg, cfg }) {
   async function onCallback(cb) {
     if (!cb.from || !cb.data || !cb.message) return;
     const from = cb.from.id;
-    if (!msgLimit(from)) return;
+    if (!(await msgLimit(from))) return;
     const [kind, a, b] = String(cb.data).slice(0, 64).split(':');
     const user = await db.ensureUser(from, cb.from.first_name || '');
 

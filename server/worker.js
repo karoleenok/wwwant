@@ -9,7 +9,9 @@ const get = env => (app ??= createApp({
   cfg: makeConfig(env),
   db: makeDb(env.DB),
   token: String(env.BOT_TOKEN || '').trim(),
-  indexHtml
+  indexHtml,
+  // Лимитеры Cloudflare из wrangler.toml. Нет привязки: работает счётчик в памяти.
+  limiters: { api: env.RL_API, ip: env.RL_IP, bot: env.RL_BOT }
 }));
 
 export default {

@@ -8,6 +8,23 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "wwwant"
 
+# Лимиты запросов от Cloudflare (счётчик общий для всех экземпляров Worker в одной точке).
+# namespace_id: любое число, уникальное в аккаунте. period только 10 или 60.
+[[ratelimits]]
+name = "RL_API"      # мини-апп, на одного пользователя
+namespace_id = "41001"
+simple = { limit = 240, period = 60 }
+
+[[ratelimits]]
+name = "RL_IP"       # любые запросы, на один IP (вебхук Telegram не считается)
+namespace_id = "41002"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "RL_BOT"      # сообщения боту, на одного пользователя
+namespace_id = "41003"
+simple = { limit = 30, period = 60 }
+
 # Раз в минуту: повторы застрявших сообщений и воскресная сводка.
 [triggers]
 crons = ["* * * * *"]
