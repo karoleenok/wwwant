@@ -220,3 +220,22 @@ test('заголовки: CSP с хэшем скрипта, frame-ancestors, nos
     assert.equal((await t.fetch('/', { method: 'HEAD' })).status, 200);
   } finally { await t.close(); }
 });
+
+test('PWA: манифест и иконки отдаются, CSP разрешает манифест', async () => {
+  const { fetch, close } = await startApp();
+  try {
+    const m = await fetch('/manifest.webmanifest');
+    assert.equal(m.status, 200);
+    const j = await m.json();
+    assert.equal(j.display, 'standalone');
+    for (const n of [180, 192, 512]) {
+      const r = await fetch(`/icon-${n}.png`);
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get('content-type'), 'image/png');
+      const b = new Uint8Array(await r.arrayBuffer());
+      assert.deepEqual([...b.slice(1, 4)], [0x50, 0x4e, 0x47]);
+    }
+    const page = await fetch('/');
+    assert.match(page.headers.get('content-security-policy'), /manifest-src 'self'/);
+  } finally { await close(); }
+});

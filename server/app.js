@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { verifyInitData } from './auth.js';
 import { makeGate } from './limits.js';
+import { ICONS } from './icons.js';
 import { cleanItem, cleanBought, isJpeg } from './validate.js';
 import { makeTg, TgError } from './tg.js';
 import { makeBot } from './bot.js';
@@ -60,7 +61,7 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
       "font-src 'self' data:",
       "connect-src 'self'",
       "frame-ancestors https://web.telegram.org https://webk.telegram.org https://webz.telegram.org https://*.telegram.org",
-      "base-uri 'none'", "form-action 'self'", "object-src 'none'"
+      "manifest-src 'self'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"
     ].join('; ');
   })();
 
@@ -260,6 +261,15 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
       ctx.waitUntil(ensureSetup());
       return send(200, request.method === 'HEAD' ? null : indexHtml, 'text/html; charset=utf-8', { 'content-security-policy': csp });
     }
+    if (request.method === 'GET' && p === '/manifest.webmanifest') {
+      return send(200, JSON.stringify({
+        name: 'wwwant', short_name: 'wwwant', lang: 'ru', start_url: '/', scope: '/', display: 'standalone',
+        background_color: '#F6F7F7', theme_color: '#F6F7F7',
+        icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }]
+      }), 'application/manifest+json', { 'cache-control': 'public, max-age=3600' });
+    }
+    const ic = p.match(/^\/icon-(180|192|512)\.png$/);
+    if (request.method === 'GET' && ic) return send(200, ICONS[ic[1]], 'image/png', { 'cache-control': 'public, max-age=86400' });
     if (request.method === 'GET' && p === '/policy') return html(200, policyPage(cfg));
 
     let mm;
