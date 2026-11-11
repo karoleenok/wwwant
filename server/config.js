@@ -11,6 +11,8 @@ export function makeConfig(env = {}) {
       contact: env.OPERATOR_CONTACT || '',
       hosting: env.HOSTING_NAME || ''
     },
+    // Кто админ: username через запятую. Первое сообщение от такого пользователя привязывает админа по числовому id.
+    adminUsernames: String(env.ADMIN_USERNAMES || 'karolenok,KarolinaPershina').split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean),
     policyDraft: env.POLICY_DRAFT !== '0',
     // Сводка по умолчанию: воскресенье 18:00 по Москве (смещение +3).
     digest: { dow: n(env.DIGEST_DOW, 0), hour: n(env.DIGEST_HOUR, 18), tzOffset: n(env.DIGEST_TZ_OFFSET, 3) },

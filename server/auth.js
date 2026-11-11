@@ -26,7 +26,7 @@ export function verifyInitData(raw, token, maxAgeSec = 86400, nowMs = Date.now()
   try {
     const u = JSON.parse(p.get('user') || '');
     if (!u || !Number.isSafeInteger(u.id) || u.id <= 0) return null;
-    return { id: u.id, first_name: String(u.first_name || '').replace(/[\u0000-\u001f]/g, '').slice(0, 40) };
+    return { id: u.id, first_name: String(u.first_name || '').replace(/[\u0000-\u001f]/g, '').slice(0, 40), username: /^[A-Za-z0-9_]{3,32}$/.test(u.username || '') ? u.username : '' };
   } catch { return null; }
 }
 
