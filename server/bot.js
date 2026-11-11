@@ -115,6 +115,17 @@ export function makeBot({ db, tg, cfg, limiter }) {
   }
 
 
+  /** Отзыв из мини-аппки: тот же путь к админу, что и у /feedback, только текст приходит из формы. */
+  async function submitFeedback({ from, name, username, text }) {
+    const a = await adminId();
+    if (!a) return 'no-admin';
+    try {
+      const head = await tg.call('sendMessage', { chat_id: a, text: `Отзыв из приложения от ${who(name, username)}:\n\n${text}\n\nОтветь на это сообщение, ответ уйдёт ему в бот.` });
+      if (head && head.message_id) await db.kvSet('fbmap:' + head.message_id, `${from}:${Date.now() + FB_MAP_TTL}`);
+      return 'ok';
+    } catch { return 'fail'; }
+  }
+
   async function fetchPhoto(fileId) {
     try {
       const f = await tg.call('getFile', { file_id: fileId });
@@ -373,5 +384,5 @@ export function makeBot({ db, tg, cfg, limiter }) {
     if (u.my_chat_member) return onMyChatMember(u.my_chat_member);
   }
 
-  return { handleUpdate, pickTarget, notifyJoin };
+  return { handleUpdate, pickTarget, notifyJoin, submitFeedback };
 }

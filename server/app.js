@@ -15,6 +15,8 @@ const MAX_JSON = 512 * 1024;
 const MAX_PHOTO = 200 * 1024;
 const MAX_AVATAR = 60 * 1024;
 const MAX_UPDATE = 256 * 1024;
+const MAX_FEEDBACK = 1000;
+const FB_GAP = 30 * 1000;           // не чаще раза в 30 секунд от одного человека
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 
 class HttpError extends Error { constructor(status, code) { super(code); this.status = status; this.code = code; } }
@@ -212,6 +214,21 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
           maxBought: cfg.maxBought
         });
       } catch (e) { if (e instanceof LimitError) throw new HttpError(409, 'limit'); throw e; }
+      return json(200, { ok: true });
+    }
+
+    if (m === 'POST' && p === '/api/feedback') {
+      needConsent(u);
+      const b = await parseJson(request, 8 * 1024);
+      const text = String(b.text == null ? '' : b.text).trim();
+      if (!text) throw new HttpError(400, 'empty');
+      if (text.length > MAX_FEEDBACK) throw new HttpError(400, 'long');
+      const last = Number(await db.kvGet('fbrl:' + u.tg_id) || 0);
+      if (Date.now() - last < FB_GAP) throw new HttpError(429, 'slow-down');
+      await db.kvSet('fbrl:' + u.tg_id, String(Date.now()));
+      const r = await bot.submitFeedback({ from: u.tg_id, name: u.first_name, username: u._username, text });
+      if (r === 'no-admin') throw new HttpError(503, 'no-admin');
+      if (r !== 'ok') throw new HttpError(502, 'send');
       return json(200, { ok: true });
     }
 
