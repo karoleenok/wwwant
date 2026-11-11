@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { verifyInitData } from './auth.js';
-import { makeLimiter } from './limits.js';
+import { makeGate } from './limits.js';
 import { cleanItem, cleanBought, isJpeg } from './validate.js';
 import { makeTg, TgError } from './tg.js';
 import { makeBot } from './bot.js';
@@ -41,12 +41,12 @@ const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(Strin
  * Приложение целиком: handle(request, ctx) отвечает на запросы, tick() запускается по cron раз в минуту.
  * Ни Node-сервера, ни файлов: база приходит снаружи (D1), токен бота тоже.
  */
-export function createApp({ cfg, db, token = '', fetchFn, indexHtml, log = (...a) => console.log(...a) }) {
+export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = {}, log = (...a) => console.log(...a) }) {
   const S = { botName: null, setupKey: '', baseLoaded: false, webhookSecret: null, photoSecret: null };
   const tg = makeTg({ bases: cfg.tgBases, getToken: () => token, fetchFn });
-  const bot = makeBot({ db, tg, cfg });
-  const apiLimit = makeLimiter(240, 60000);
-  const ipLimit = makeLimiter(120, 60000);
+  const bot = makeBot({ db, tg, cfg, limiter: limiters.bot });
+  const apiLimit = makeGate(limiters.api, 240, 60000);
+  const ipLimit = makeGate(limiters.ip, 120, 60000);
 
   // ---------- CSP: хэши inline-скриптов считаем один раз ----------
   const csp = (() => {
@@ -125,7 +125,7 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, log = (...a
     if (!h.startsWith('tma ')) throw new HttpError(401, 'auth');
     const u = verifyInitData(h.slice(4), token, cfg.initDataMaxAge);
     if (!u) throw new HttpError(401, 'auth');
-    if (!apiLimit('u' + u.id)) throw new HttpError(429, 'slow-down');
+    if (!(await apiLimit('u' + u.id))) throw new HttpError(429, 'slow-down');
     return db.ensureUser(u.id, u.first_name);
   }
   const needConsent = u => { if (!u.consent_at) throw new HttpError(403, 'consent'); };
@@ -234,7 +234,8 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, log = (...a
     const url = new URL(request.url);
     const p = url.pathname;
     const ip = request.headers.get('cf-connecting-ip') || 'local';
-    if (!ipLimit(ip)) return send(429, 'Too many requests');
+    // Вебхук Telegram приходит с малого числа адресов и проверяется секретом, его по IP не режем.
+    if (p !== '/tg' && !(await ipLimit(ip))) return send(429, 'Too many requests');
 
     // Webhook от Telegram. Подлинность: секрет в заголовке, который мы сами задали в setWebhook.
     if (p === '/tg') {
