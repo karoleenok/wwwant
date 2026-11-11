@@ -9,6 +9,8 @@ const FB_TTL = 15 * 60 * 1000;          // сколько ждём текст о
 const FB_MAP_TTL = 30 * 86400000;       // сколько можно отвечать на отзыв
 const NP_TTL = 60 * 60 * 1000;          // черновик рассылки
 const NP_MAX = 10;                      // сообщений в одном посте (альбом считается по штукам)
+const WELCOME_BTN = 'Выйти на тропу';   // подпись кнопки под приветственным постом
+const WELCOME_TAIL = 'Дальше по кнопке.'; // у альбома кнопку повесить нельзя, она уходит отдельной строкой
 
 export const USER_COMMANDS = [
   { command: 'start', description: 'Начать' },
@@ -20,6 +22,7 @@ export const USER_COMMANDS = [
 export const ADMIN_COMMANDS = [
   { command: 'stats', description: 'Статистика' },
   { command: 'new', description: 'Новый пост для всех' },
+  { command: 'welcome', description: 'Приветственный пост' },
   ...USER_COMMANDS
 ];
 const rid = () => 1 + crypto.randomInt(2147483000);
@@ -96,6 +99,50 @@ export function makeBot({ db, tg, cfg, limiter }) {
   };
   const setNp = (id, d) => db.kvSet('np:' + id, JSON.stringify({ ...d, exp: Date.now() + NP_TTL }));
   const npKb = [[{ text: 'Предпросмотр', callback_data: 'np:prev' }], [{ text: 'Отмена', callback_data: 'np:cancel' }]];
+
+  // ---------- приветственный пост ----------
+  // Лежит одной записью kv: { from, ids, album, btn, at }. Копируется с сообщений в чате админа, поэтому их нельзя удалять.
+  const getWelcome = async () => {
+    const raw = await db.kvGet('welcome');
+    if (!raw) return null;
+    try { const w = JSON.parse(raw); return w && Array.isArray(w.ids) && w.ids.length && w.from ? w : null; } catch { return null; }
+  };
+  /** Из чего состоит приветствие для одного человека. Админу показываем ровно то же, что уйдёт новичкам. */
+  function welcomeParts(w, to) {
+    const base = { chat_id: to, from_chat_id: w.from };
+    if (!(w.btn && url())) return [['copyMessages', { ...base, message_ids: w.ids }]];
+    const kb = { inline_keyboard: [[{ text: WELCOME_BTN, web_app: { url: url() } }]] };
+    if (w.album) return [['copyMessages', { ...base, message_ids: w.ids }], ['sendMessage', { chat_id: to, text: WELCOME_TAIL, reply_markup: kb }]];
+    const parts = [];
+    if (w.ids.length > 1) parts.push(['copyMessages', { ...base, message_ids: w.ids.slice(0, -1) }]);
+    parts.push(['copyMessage', { ...base, message_id: w.ids.at(-1), reply_markup: kb }]);
+    return parts;
+  }
+  /** Новичку: в очередь отправки, один раз на версию поста. */
+  async function sendWelcome(to) {
+    const w = await getWelcome();
+    if (!w || (await db.kvGet('wel:' + to)) === String(w.at)) return;
+    for (const [m, p] of welcomeParts(w, to)) await db.enqueue(to, m, p);
+    await db.kvSet('wel:' + to, w.at);
+  }
+  /** Админу: сразу, без очереди, чтобы увидеть ошибку, если исходные сообщения удалили. */
+  async function previewWelcome(to, w) {
+    try { for (const [m, p] of welcomeParts(w, to)) await tg.call(m, p); return true; } catch { return false; }
+  }
+  async function welcomeMenu(from) {
+    const w = await getWelcome();
+    if (!w) {
+      await send(from, 'Приветственного поста пока нет. Собери пост через /new, на предпросмотре нажми «Сделать приветственным».');
+      return;
+    }
+    const off = [{ text: 'Убрать приветствие', callback_data: 'wel:off' }];
+    if (!(await previewWelcome(from, w))) {
+      await send(from, 'Не получилось показать приветствие: исходные сообщения, похоже, удалили. Новичкам оно не дойдёт. Собери пост заново через /new или убери его.', [off]);
+      return;
+    }
+    await send(from, `Выше то, что получает новичок после /start, до просьбы о согласии. Кнопка «${WELCOME_BTN}»: ${w.btn ? 'есть' : 'нет'}.`,
+      [[{ text: w.btn ? 'Убрать кнопку' : `Добавить кнопку «${WELCOME_BTN}»`, callback_data: 'wel:btn' }], off]);
+  }
 
   async function startFeedback(from) {
     await db.kvSet('fb:' + from, String(Date.now() + FB_TTL));
@@ -197,7 +244,11 @@ export function makeBot({ db, tg, cfg, limiter }) {
     const admin = await isAdmin(from, msg.from.username);
 
     if (cmd === '/start' || cmd === '/help') {
-      if (!user.consent_at) { await askConsent(from); return; }
+      if (!user.consent_at) {
+        if (/^\/start(@\w+)?$/i.test(text.trim())) await sendWelcome(from);   // с «/start feedback» человек пришёл по делу, без приветствия
+        await askConsent(from);
+        return;
+      }
       await db.kvDel('fb:' + from);
       if (/^\/start(@\w+)?\s+feedback\b/i.test(text)) { await startFeedback(from); return; }
       await send(from, 'Пришли ссылку на товар и цену, например:\nЛампа 4300 https://ozon.ru/t/…\n\nКоманды: /week сводка сейчас, /feedback написать мне, /digest_off и /digest_on включают и выключают сводку, /delete_me стирает всё.', openKb());
@@ -209,6 +260,7 @@ export function makeBot({ db, tg, cfg, limiter }) {
       await send(from, `Пришли пост: текст, картинки, всё что нужно, можно несколькими сообщениями (до ${NP_MAX}). Премиум-эмодзи подойдут. Потом нажми «Предпросмотр».`, [[{ text: 'Отмена', callback_data: 'np:cancel' }]]);
       return;
     }
+    if (admin && cmd === '/welcome') { await welcomeMenu(from); return; }
     // ответ админа на отзыв: уходит тому, кто писал
     if (admin && msg.reply_to_message) {
       const m = String(await db.kvGet('fbmap:' + msg.reply_to_message.message_id) || '').split(':').map(Number);
@@ -307,7 +359,23 @@ export function makeBot({ db, tg, cfg, limiter }) {
         catch { await send(from, 'Не получилось показать предпросмотр. Пришли пост заново: /new.'); return; }
         const n = (await db.recipients(from)).length;
         await send(from, `Так увидят получатели. Отправить ${n} ${n % 10 === 1 && n % 100 !== 11 ? 'человеку' : 'людям'}?`,
-          [[{ text: 'Отправить всем', callback_data: 'np:send' }], [{ text: 'Собрать заново', callback_data: 'np:redo' }, { text: 'Отмена', callback_data: 'np:cancel' }]]);
+          [[{ text: 'Отправить всем', callback_data: 'np:send' }], [{ text: 'Сделать приветственным', callback_data: 'np:wel' }],
+            [{ text: 'Собрать заново', callback_data: 'np:redo' }, { text: 'Отмена', callback_data: 'np:cancel' }]]);
+        return;
+      }
+      if (a === 'wel' && !b) {
+        await dropButtons(from, cb.message);
+        await send(from, `Приветственный пост получает каждый новый человек сразу после /start, до просьбы о согласии. Добавить под него кнопку «${WELCOME_BTN}»?`,
+          [[{ text: 'С кнопкой', callback_data: 'np:wel:1' }, { text: 'Без кнопки', callback_data: 'np:wel:0' }], [{ text: 'Отмена', callback_data: 'np:cancel' }]]);
+        return;
+      }
+      if (a === 'wel' && (b === '1' || b === '0')) {
+        await dropButtons(from, cb.message);
+        const w = { from, ids: np.ids, album: !!np.group, btn: b === '1', at: Date.now() };
+        if (!(await previewWelcome(from, w))) { await send(from, 'Не получилось собрать приветствие. Пришли пост заново: /new.'); return; }
+        await db.kvSet('welcome', JSON.stringify(w));
+        await db.kvDel('np:' + from);
+        await send(from, 'Готово. Выше то, что получит новый человек после /start. Эти сообщения в чате с ботом не удаляй: приветствие копируется с них. Поменять кнопку или убрать приветствие: /welcome.');
         return;
       }
       if (a === 'redo') { await dropButtons(from, cb.message); await setNp(from, { ids: [] }); await send(from, 'Ок, пришли пост заново.', [[{ text: 'Отмена', callback_data: 'np:cancel' }]]); return; }
@@ -319,6 +387,16 @@ export function makeBot({ db, tg, cfg, limiter }) {
         await send(from, `Поставил в очередь: ${list.length}. Доходит не сразу, около 15 сообщений в минуту. Ход смотри в /stats.`);
         return;
       }
+      return;
+    }
+    if (kind === 'wel') {
+      await answer(from, cb.id);
+      if (!(await isAdmin(from, cb.from.username))) return;
+      await dropButtons(from, cb.message);
+      const w = await getWelcome();
+      if (!w) { await send(from, 'Приветственного поста уже нет.'); return; }
+      if (a === 'off') { await db.kvDel('welcome'); await send(from, 'Убрал. Новые люди получат обычное приветствие без поста.'); return; }
+      if (a === 'btn') { await db.kvSet('welcome', JSON.stringify({ ...w, btn: !w.btn })); await welcomeMenu(from); }
       return;
     }
     if (!user.consent_at) { await answer(from, cb.id); await askConsent(from); return; }

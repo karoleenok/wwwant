@@ -96,7 +96,7 @@ export function createApp({ cfg, db, token = '', fetchFn, indexHtml, limiters = 
   async function ensureSetup() {
     if (!token || !cfg.webappUrl) return;
     const fp = crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
-    const key = `${cfg.webappUrl}|${fp}|cmd3`;
+    const key = `${cfg.webappUrl}|${fp}|cmd4`;
     if (S.setupKey === key) return;
     try {
       const me = await tg.call('getMe', {}, { timeoutMs: 15000 });

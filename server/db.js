@@ -213,7 +213,7 @@ export function makeDb(d1) {
       await batch([
         ['DELETE FROM items WHERE tg_id=?', [tg]],
         ['DELETE FROM bought WHERE tg_id=?', [tg]],
-        ['DELETE FROM kv WHERE k IN (?,?,?,?,?,?)', ['draft:' + tg, 'await_amt:' + tg, 'avatar:' + tg, 'fb:' + tg, 'np:' + tg, 'fbrl:' + tg]]
+        ['DELETE FROM kv WHERE k IN (?,?,?,?,?,?,?)', ['draft:' + tg, 'await_amt:' + tg, 'avatar:' + tg, 'fb:' + tg, 'np:' + tg, 'fbrl:' + tg, 'wel:' + tg]]
       ]);
     },
     async deleteUser(tg) {
@@ -221,7 +221,7 @@ export function makeDb(d1) {
         ['DELETE FROM items WHERE tg_id=?', [tg]],
         ['DELETE FROM bought WHERE tg_id=?', [tg]],
         ['DELETE FROM outbox WHERE tg_id=?', [tg]],
-        ['DELETE FROM kv WHERE k IN (?,?,?,?,?,?)', ['draft:' + tg, 'await_amt:' + tg, 'avatar:' + tg, 'fb:' + tg, 'np:' + tg, 'fbrl:' + tg]],
+        ['DELETE FROM kv WHERE k IN (?,?,?,?,?,?,?)', ['draft:' + tg, 'await_amt:' + tg, 'avatar:' + tg, 'fb:' + tg, 'np:' + tg, 'fbrl:' + tg, 'wel:' + tg]],
         ['DELETE FROM users WHERE tg_id=?', [tg]]
       ]);
     },
