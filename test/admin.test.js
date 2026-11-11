@@ -18,7 +18,7 @@ function setup() {
   const msg = (id, text, extra = {}, username) => bot.handleUpdate({ update_id: 1, message: { message_id: ++mid, chat: { id, type: 'private' }, from: { id, first_name: 'N' + id, ...(username ? { username } : {}) }, text, ...extra } });
   const cb = (id, data, username) => bot.handleUpdate({ update_id: 2, callback_query: { id: 'c', from: { id, first_name: 'N' + id, ...(username ? { username } : {}) }, data, message: { message_id: 9, chat: { id } } } });
   const join = async (id, username) => { await msg(id, '/start', {}, username); await cb(id, 'consent:yes', username); };
-  return { db, queue, msg, cb, join };
+  return { db, queue, msg, cb, join, bot };
 }
 
 test('админ привязывается по username один раз, чужие не становятся админом', async () => {
@@ -121,5 +121,34 @@ test('аватарка: загрузка, выдача в state, сброс, н�
     assert.match((await state()).avatar, /^data:image\/jpeg;base64,/);
     assert.equal((await call(t, 'DELETE', '/api/avatar')).status, 200);
     assert.equal((await state()).avatar, '');
+  } finally { await t.close(); }
+});
+
+
+test('отзыв из приложения: доходит админу, ответ админа возвращается автору', async () => {
+  const s = setup();
+  assert.equal(await s.bot.submitFeedback({ from: GUEST, name: 'N2', username: 'g', text: 'x' }), 'no-admin');
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await s.join(GUEST, 'g');
+  tgCalls.length = 0;
+  assert.equal(await s.bot.submitFeedback({ from: GUEST, name: 'N2', username: 'g', text: 'Нужна тёмная тема' }), 'ok');
+  const sent = tgCalls.find(c => c.m === 'sendMessage' && c.p.chat_id === ADMIN && /Отзыв из приложения от N2 \(@g\)/.test(c.p.text) && /Нужна тёмная тема/.test(c.p.text));
+  assert.ok(sent);
+  const id = 500 + tgCalls.indexOf(sent) + 1;
+  assert.ok(await s.db.kvGet('fbmap:' + id));
+  await s.msg(ADMIN, 'Добавим!', { reply_to_message: { message_id: id } }, A_NAME);
+  assert.ok(s.queue().some(x => x.to === GUEST && x.method === 'sendMessage' && /Ответ от создателя/.test(x.text)));
+});
+
+test('POST /api/feedback: согласие, пустой и длинный текст, пауза, нет админа', async () => {
+  const t = await startApp({}, { withToken: true });
+  try {
+    const post = text => call(t, 'POST', '/api/feedback', { body: { text } });
+    assert.equal((await post('привет')).status, 403);                  // без согласия
+    assert.equal((await call(t, 'POST', '/api/consent', { body: {} })).status, 200);
+    assert.equal((await post('   ')).status, 400);
+    assert.equal((await post('я'.repeat(1001))).status, 400);
+    assert.equal((await post('Идея')).status, 503);                    // админ ещё не привязан
+    assert.equal((await post('Ещё идея')).status, 429);                // слишком часто
   } finally { await t.close(); }
 });

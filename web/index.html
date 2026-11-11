@@ -193,6 +193,12 @@ button,input{font:inherit;color:inherit}
 .row{display:flex;gap:var(--s2);margin-top:var(--s4)}
 .fld{flex:1;min-width:0;height:var(--tap);padding:0 var(--s4);border:1px solid var(--ink);border-radius:var(--r);background:#fff;font-size:16px;font-variant-numeric:tabular-nums}
 .fld::placeholder{color:#8A8F94}
+.fb-p{margin-top:var(--s3);font:400 14px/1.4 var(--f-body);color:var(--ink2)}
+.fb-ta{display:block;width:100%;height:auto;min-height:132px;margin-top:var(--s3);padding:var(--s3) var(--s4);resize:none;font:400 16px/1.4 var(--f-body)}
+.fb-meta{display:flex;justify-content:space-between;gap:var(--s3);margin:var(--s2) 0 var(--s3);font:400 12px/1.3 var(--f-body);color:var(--ink2)}
+#fbErr{color:#B3261E}
+#fbForm .btn,#fbDone .btn{width:100%}#fbDone .pill{margin-top:var(--s4)}#fbDone .btn{margin-top:var(--s4)}
+.btn:disabled{opacity:.4;cursor:default}
 .btn{flex:none;height:var(--tap);padding:0 var(--s5);border:1px solid var(--ink);border-radius:var(--r);background:var(--ink);color:var(--paper);font:600 14px/1 var(--f-body);cursor:pointer;transition:transform .15s}
 .btn:active{transform:scale(.97)}
 .btn.ghost{background:var(--paper);color:var(--ink)}
@@ -437,8 +443,27 @@ button,input{font:inherit;color:inherit}
     <a class="lnk" id="pfPolicy" href="/policy" target="_blank" rel="noopener noreferrer" style="margin:0" hidden>Политика обработки данных</a>
     <div class="pf-sure" id="pfSure2" hidden><span>Удалю всё и отзову согласие. Вернуть будет нельзя.</span><button class="btn ghost" id="pfNo2" type="button">Нет</button><button class="btn" id="pfYes2" type="button">Удалить</button></div>
     <div class="pf-sure" id="pfSure" hidden><span>Точно? Вернуть будет нельзя.</span><button class="btn ghost" id="pfNo" type="button">Нет</button><button class="btn" id="pfYes" type="button">Стереть</button></div>
-    <button class="pf-au" id="pfFb" type="button"><i class="pf-fbi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v11H9l-5 4z"/></svg></i><span><b>Обратная связь</b><small>Идея или баг: напиши, отвечу в боте</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+    <button class="pf-au" id="pfFb" type="button"><i class="pf-fbi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v11H9l-5 4z"/></svg></i><span><b>Обратная связь</b><small>Идея или баг: напиши прямо здесь</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
     <button class="pf-au" id="pfAu" type="button"><img src="data:image/jpeg;base64,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" alt=""><span><b>О создателе</b><small>Каролина · открыта к сотрудничеству</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+  </section>
+
+  <section class="sheet" id="fbSheet" role="dialog" aria-modal="true" aria-labelledby="fbT">
+    <div class="grab"></div>
+    <div class="sh-head">
+      <button class="x" id="fbBack" type="button" aria-label="Назад в профиль"><svg viewBox="0 0 20 20"><path d="M12 4L6 10l6 6"/></svg></button>
+      <div class="sh-txt"><h2 id="fbT">Обратная связь</h2></div>
+      <button class="x" data-close aria-label="Закрыть"><svg viewBox="0 0 20 20"><path d="M4 4l12 12M16 4L4 16"/></svg></button></div>
+    <div id="fbForm">
+      <p class="fb-p">Идея, баг или что не нравится. Прочитает создатель, ответ придёт от бота в Телеграм.</p>
+      <textarea class="fld fb-ta" id="fbText" maxlength="1000" rows="5" placeholder="Что хочешь сказать?" aria-label="Текст отзыва"></textarea>
+      <div class="fb-meta"><span id="fbErr" role="alert"></span><span id="fbCnt">0 / 1000</span></div>
+      <button class="btn" id="fbSend" type="button" disabled>Отправить</button>
+    </div>
+    <div id="fbDone" hidden>
+      <span class="pill">// отправлено</span>
+      <p class="fb-p">Спасибо, всё дошло. Если будет что ответить, ответ придёт в чат с ботом.</p>
+      <button class="btn" id="fbOk" type="button">Готово</button>
+    </div>
   </section>
 
   <section class="sheet" id="auSheet" role="dialog" aria-modal="true" aria-labelledby="auT">
@@ -901,7 +926,7 @@ function showSheet(el){
   el.setAttribute("tabindex","-1"); setTimeout(function(){try{el.focus({preventScroll:true})}catch(_){}},60);
 }
 function closeSheets(){
-  sheetOpen=false; scrim.classList.remove("on"); sheet.classList.remove("open"); edSheet.classList.remove("open"); $("#pfSheet").classList.remove("open"); $("#auSheet").classList.remove("open");
+  sheetOpen=false; scrim.classList.remove("on"); sheet.classList.remove("open"); edSheet.classList.remove("open"); $("#pfSheet").classList.remove("open"); $("#auSheet").classList.remove("open"); $("#fbSheet").classList.remove("open");
   tilt.style.setProperty("--ay","76%"); curId=null; $("#toast").style.bottom="";
   document.activeElement&&document.activeElement.blur&&document.activeElement.blur();
 }
@@ -1102,7 +1127,7 @@ function openProfile(){
 }
 $("#sum").addEventListener("click",openProfile);
 function makeAvatar(file){return new Promise(function(res,rej){var u=URL.createObjectURL(file),im=new Image();
-  im.onload=function(){try{var s=Math.min(im.naturalWidth,im.naturalHeight),c=document.createElement("canvas");c.width=c.height=256;var x=c.getContext("2d");x.fillStyle="#fff";x.fillRect(0,0,256,256);x.drawImage(im,(im.naturalWidth-s)/2,(im.naturalHeight-s)/2,s,s,0,0,256,256);URL.revokeObjectURL(u);c.toBlob(function(b){b?res(b):rej(new Error("blob"))},"image/jpeg",.85)}catch(e){rej(e)}};
+  im.onload=function(){try{var s=Math.min(im.naturalWidth,im.naturalHeight),c=document.createElement("canvas");c.width=c.height=256;var x=c.getContext("2d");x.fillStyle="#fff";x.fillRect(0,0,256,256);x.drawImage(im,(im.naturalWidth-s)/2,(im.naturalHeight-s)/2,s,s,0,0,256,256);URL.revokeObjectURL(u);var q=[.85,.7,.55,.4,.3],i=0,go=function(){c.toBlob(function(b){if(!b)return rej(new Error("blob"));if(b.size<=56000||i>=q.length-1)return res(b);i++;go()},"image/jpeg",q[i])};go()}catch(e){rej(e)}};
   im.onerror=function(){URL.revokeObjectURL(u);rej(new Error("img"))};im.src=u})}
 function blobUrl(b){return new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(String(r.result))};r.onerror=function(){rej(r.error)};r.readAsDataURL(b)})}
 function repaintAv(){paintAv($("#sumAv"));paintAv($("#pfAv"));$("#pfAvDel").hidden=!customAv}
@@ -1111,18 +1136,31 @@ $("#pfAv").addEventListener("click",function(){$("#pfAvFile").click()});
 $("#pfAvFile").addEventListener("change",function(){
   var f=this.files&&this.files[0];this.value="";if(!f)return;
   makeAvatar(f).then(function(b){return blobUrl(b).then(function(url){
-    var save=LIVE?api("PUT","/avatar",b,true):Promise.resolve();
+    var save=LIVE?api("PUT","/avatar",undefined,b):Promise.resolve();
     return save.then(function(){customAv=url;if(!LIVE){try{localStorage.setItem("wwwant-avatar",url)}catch(e){}}repaintAv();toast("Фото обновили")})})})
-  .catch(function(e){toast(e&&(e.status===413||e.status===415)?"Это фото не подошло, возьми другое":"Не получилось поменять фото")});
+  .catch(function(e){toast(e&&e.message==="img"?"Не получается открыть этот файл. Попробуй другое фото или скриншот":"Не получилось поменять фото, попробуй ещё раз")});
 });
 $("#pfAvDel").addEventListener("click",function(){
   var done=function(){customAv="";if(!LIVE){try{localStorage.removeItem("wwwant-avatar")}catch(e){}}repaintAv();toast("Вернули фото из Telegram")};
   if(LIVE)api("DELETE","/avatar").then(done).catch(function(){toast("Не получилось, попробуй ещё раз")});else done();
 });
+function fbReset(){$("#fbForm").hidden=false;$("#fbDone").hidden=true;$("#fbText").value="";$("#fbErr").textContent="";fbCount()}
+function fbCount(){var n=$("#fbText").value.trim().length;$("#fbCnt").textContent=$("#fbText").value.length+" / 1000";$("#fbSend").disabled=!n}
+$("#fbText").addEventListener("input",function(){$("#fbErr").textContent="";fbCount()});
 $("#pfFb").addEventListener("click",function(){
-  var u="https://t.me/wwwant_bot?start=feedback";
-  try{if(tg&&tg.openTelegramLink){tg.openTelegramLink(u);return}}catch(e){}
-  window.open(u,"_blank");
+  if(!LIVE){var u="https://t.me/wwwant_bot?start=feedback";try{if(tg&&tg.openTelegramLink){tg.openTelegramLink(u);return}}catch(e){}window.open(u,"_blank");return}
+  fbReset();$("#pfSheet").classList.remove("open");showSheet($("#fbSheet"));
+});
+$("#fbBack").addEventListener("click",function(){$("#fbSheet").classList.remove("open");showSheet($("#pfSheet"))});
+$("#fbOk").addEventListener("click",closeSheets);
+$("#fbSend").addEventListener("click",function(){
+  var b=this,t=$("#fbText").value.trim();if(!t||b.disabled)return;
+  b.disabled=true;b.textContent="Отправляю…";$("#fbErr").textContent="";
+  api("POST","/feedback",{text:t}).then(function(){$("#fbForm").hidden=true;$("#fbDone").hidden=false;try{$("#fbOk").focus({preventScroll:true})}catch(e){}})
+  .catch(function(e){
+    var c=e&&e.status;
+    $("#fbErr").textContent=c===429?"Подожди полминуты и отправь ещё раз":c===503?"Пока некому передать, попробуй чуть позже":c===400?"Напиши текст до 1000 знаков":"Не получилось отправить. Текст остался, попробуй ещё раз";
+  }).then(function(){b.textContent="Отправить";fbCount()});
 });
 $("#pfWipe").addEventListener("click",function(){this.hidden=true;$("#pfSure").hidden=false});
 $("#pfPolicy").addEventListener("click",openPolicy);
