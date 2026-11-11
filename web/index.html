@@ -292,14 +292,15 @@ button,input{font:inherit;color:inherit}
 .gate ul{margin:var(--s3) 0 0;padding-left:var(--s5);font:400 14px/1.5 var(--f-body);color:var(--ink2)}
 .gate .row .btn{flex:1}
 .gate .lnk{margin-top:var(--s2)}
-.empty{position:absolute;left:var(--edge);right:var(--edge);top:50%;transform:translateY(-50%);z-index:4;max-width:360px;margin:0 auto;
+.empty{position:absolute;left:var(--edge);right:var(--edge);bottom:calc(env(safe-area-inset-bottom,0px) + var(--s4) + 44px + var(--s3));z-index:4;max-width:360px;margin:0 auto;
   padding:var(--s5);background:var(--paper);border:1px solid var(--ink);border-radius:var(--r);text-align:center}
 .empty h3{font-weight:400;line-height:1.05;margin-top:var(--s3)}
 .empty h3 b{font:700 28px/1.05 var(--f-head);text-transform:uppercase;letter-spacing:-.01em;background:var(--blue);padding:0 var(--s2)}
 .empty h3 i{display:block;margin-top:var(--s1);font:400 30px/1.05 var(--f-serif);font-style:normal}
 .empty p{margin-top:var(--s3);font:400 14px/1.4 var(--f-body);color:var(--ink2)}
 .empty .btn{margin-top:var(--s4);width:100%}
-.stage.is-empty .tilt{opacity:.55}
+.stage.is-empty .tilt{opacity:.8}
+.it.gh{pointer-events:none;cursor:default}
 .stage.is-empty .portal{opacity:0!important}
 .eta{margin-top:var(--s2);font:400 13px/1.3 var(--f-body);color:var(--ink2);font-variant-numeric:tabular-nums}
 /* профиль: настройки сводки */
@@ -709,6 +710,7 @@ function mkItem(it){
   var el=document.createElement("div"); el.className="it"; el.dataset.id=it.id; el.tabIndex=0; el.setAttribute("role","button");
   el.innerHTML='<span class="pol"><i class="tape"></i><span class="ph"><svg viewBox="0 0 64 64" aria-hidden="true"></svg></span><span class="cap"><b class="nm"></b><span class="pr"><em class="p"></em><em class="pc"></em></span></span><span class="bar"><i></i></span></span><i class="stick"></i>';
   var sh=document.createElement("i"); sh.className="shd";
+  if(it.ghost){el.classList.add("gh");el.tabIndex=-1;el.setAttribute("aria-hidden","true");el.removeAttribute("role")}
   ground.appendChild(sh); ground.appendChild(el); refs[it.id]={el:el,sh:sh,op:1};
 }
 var ROT=[-3,2.5,-2,3,-2.5,2,-3.5,1.5];
@@ -736,10 +738,26 @@ function updItem(it,idx){
   pol.querySelector(".pc").textContent=pct(it)+"%";
   pol.querySelector(".bar").style.setProperty("--p",pct(it)+"%");
   r.el.classList.toggle("full",it.saved>=it.price&&it.price>0);
-  r.el.setAttribute("aria-label",it.name+", "+fmt(it.price)+", отложено "+pct(it)+"%");
+  if(!it.ghost)r.el.setAttribute("aria-label",it.name+", "+fmt(it.price)+", отложено "+pct(it)+"%");
   r.sh.style.setProperty("--z",1);
 }
+// Пока на тропе пусто, на фоне показываем «как будет»: пример-вещи без кликов. Они не попадают в данные и пропадают с первой настоящей вещью.
+var GHOSTS=[
+  {id:-1,name:"Лампа",price:4300,saved:2100,zone:0,icon:"lamp",tint:1},
+  {id:-2,name:"Кроссовки",price:12800,saved:3200,zone:0,icon:"shoe",tint:3},
+  {id:-3,name:"Пальто",price:18900,saved:5600,zone:1,icon:"coat",tint:1},
+  {id:-4,name:"Кофемашина",price:34900,saved:9000,zone:1,icon:"coffee",tint:0},
+  {id:-5,name:"Ноутбук",price:119000,saved:23000,zone:2,icon:"laptop",tint:4},
+  {id:-6,name:"Поездка",price:90000,saved:12000,zone:2,icon:"plane",tint:2}
+];
 function render(keepS){
+  var real=items, gh=real.length===0&&!gateOn&&view==="trail";
+  if(gh)items=GHOSTS.map(function(g){var c=JSON.parse(JSON.stringify(g));c.ghost=true;return c});
+  try{renderBody()}finally{items=real}
+  // items снова настоящие: суммы, счётчики и пустое состояние считаем по ним
+  buildDock(); updSum(); updEmpty(); need=true;
+}
+function renderBody(){
   L=layout(); geom(); buildStatic();
   var ids={}; items.forEach(function(i){ids[i.id]=1});
   Object.keys(refs).forEach(function(k){if(!ids[k]){refs[k].el.remove();refs[k].sh.remove();delete refs[k]}});
@@ -747,8 +765,7 @@ function render(keepS){
   // порядок DOM: дальние раньше, ближние позже
   items.slice().sort(function(a,b){return L.pos[b.id].t-L.pos[a.id].t}).forEach(function(it){ground.appendChild(refs[it.id].sh);ground.appendChild(refs[it.id].el)});
   items.forEach(function(it,i){updItem(it,L.pos[it.id].k+it.zone)});
-  buildDock(); updSum(); clampTarget(); updEmpty(); if(!keepS){}
-  need=true;
+  clampTarget();
 }
 
 /* ---------- шапка, док ---------- */
