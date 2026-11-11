@@ -7,10 +7,11 @@ import { JPEG, d1Shim, startApp, authHeader, call, ORIGIN, TOKEN } from './helpe
 
 const ADMIN = 1, A_NAME = 'karolenok', GUEST = 2, GUEST2 = 3;
 const tgCalls = [];
-const fakeTg = { call: async (m, p) => { tgCalls.push({ m, p }); return m === 'sendMessage' || m === 'copyMessage' ? { message_id: 500 + tgCalls.length } : true; }, download: async () => JPEG };
+let failCopy = false;                                           // «исходные сообщения удалили»
+const fakeTg = { call: async (m, p) => { tgCalls.push({ m, p }); if (failCopy && /^copyMessages?$/.test(m)) throw new Error('400'); return m === 'sendMessage' || m === 'copyMessage' ? { message_id: 500 + tgCalls.length } : true; }, download: async () => JPEG };
 
 function setup() {
-  tgCalls.length = 0;
+  tgCalls.length = 0; failCopy = false;
   const d1 = d1Shim(); const db = makeDb(d1);
   const bot = makeBot({ db, tg: fakeTg, cfg: makeConfig({ WEBAPP_URL: 'https://x.example' }) });
   const queue = () => d1.raw.prepare('SELECT tg_id,method,payload FROM outbox ORDER BY id').all().map(r => ({ to: r.tg_id, method: r.method, ...JSON.parse(r.payload) }));
@@ -151,4 +152,141 @@ test('POST /api/feedback: согласие, пустой и длинный те�
     assert.equal((await post('Идея')).status, 503);                    // админ ещё не привязан
     assert.equal((await post('Ещё идея')).status, 429);                // слишком часто
   } finally { await t.close(); }
+});
+
+/** Админ собирает пост из сообщений и доводит до выбора «Сделать приветственным». */
+async function buildPost(s, msgs) {
+  await s.msg(ADMIN, '/new', {}, A_NAME);
+  for (const [text, extra] of msgs) await s.msg(ADMIN, text, extra || {}, A_NAME);
+  await s.cb(ADMIN, 'np:prev', A_NAME);
+}
+const toGuest = s => s.queue().filter(x => x.to === GUEST);
+
+test('приветствие: выбор после предпросмотра, с кнопкой, новичок получает его первым и один раз', async () => {
+  const s = setup();
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await buildPost(s, [['Привет, это тропа']]);
+  const prev = tgCalls.length;
+  await s.cb(ADMIN, 'np:wel', A_NAME);                            // вопрос про кнопку, ничего не сохранено
+  assert.equal(await s.db.kvGet('welcome'), null);
+  await s.cb(ADMIN, 'np:wel:1', A_NAME);
+  const w = JSON.parse(await s.db.kvGet('welcome'));
+  assert.equal(w.from, ADMIN); assert.equal(w.btn, true); assert.equal(w.album, false); assert.equal(w.ids.length, 1);
+  assert.equal(await s.db.kvGet('np:' + ADMIN), null);            // черновик рассылки закрыт
+  const shown = tgCalls.slice(prev).find(c => c.m === 'copyMessage');
+  assert.equal(shown.p.chat_id, ADMIN);                           // админ видит ровно то, что уйдёт новичкам
+  assert.equal(shown.p.reply_markup.inline_keyboard[0][0].text, 'Выйти на тропу');
+  assert.equal(shown.p.reply_markup.inline_keyboard[0][0].web_app.url, 'https://x.example');
+
+  await s.msg(GUEST, '/start', {}, 'g');
+  let q = toGuest(s);
+  assert.equal(q[0].method, 'copyMessage');                       // приветствие раньше просьбы о согласии
+  assert.equal(q[0].from_chat_id, ADMIN);
+  assert.deepEqual(q[0].message_id, w.ids[0]);
+  assert.equal(q[0].reply_markup.inline_keyboard[0][0].web_app.url, 'https://x.example');
+  assert.equal(q[1].method, 'sendMessage');
+  assert.match(q[1].text, /согласие/);
+  await s.msg(GUEST, '/start', {}, 'g');                          // второй /start до согласия: приветствие не дублируется
+  q = toGuest(s);
+  assert.equal(q.filter(x => x.method === 'copyMessage').length, 1);
+  await s.cb(GUEST, 'consent:yes', 'g');
+  await s.msg(GUEST, '/start', {}, 'g');                          // уже свой человек: обычная подсказка
+  assert.equal(toGuest(s).filter(x => x.method === 'copyMessage').length, 1);
+});
+
+test('приветствие: без кнопки, несколько сообщений, альбом в конце', async () => {
+  let s = setup();
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await buildPost(s, [['Раз'], ['Два']]);
+  await s.cb(ADMIN, 'np:wel:0', A_NAME);
+  await s.msg(GUEST, '/start', {}, 'g');
+  let q = toGuest(s).filter(x => /^copy/.test(x.method));
+  assert.equal(q.length, 1);                                       // без кнопки: одним альбомно-безопасным вызовом
+  assert.equal(q[0].method, 'copyMessages');
+  assert.equal(q[0].message_ids.length, 2);
+  assert.equal(q[0].reply_markup, undefined);
+
+  s = setup();                                                     // с кнопкой: кнопка на последнем сообщении
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await buildPost(s, [['Раз'], ['Два'], ['Три']]);
+  await s.cb(ADMIN, 'np:wel:1', A_NAME);
+  await s.msg(GUEST, '/start', {}, 'g');
+  q = toGuest(s).filter(x => /^copy/.test(x.method));
+  assert.equal(q[0].method, 'copyMessages'); assert.equal(q[0].message_ids.length, 2);
+  assert.equal(q[1].method, 'copyMessage'); assert.ok(q[1].reply_markup);
+  assert.ok(q[0].message_ids.at(-1) < q[1].message_id);
+
+  s = setup();                                                     // альбом в конце: кнопку вешать не на что, она уходит отдельно
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await buildPost(s, [['', { photo: [{ file_id: 'a', file_size: 10 }], media_group_id: 'G' }], ['', { photo: [{ file_id: 'b', file_size: 10 }], media_group_id: 'G' }]]);
+  await s.cb(ADMIN, 'np:wel:1', A_NAME);
+  await s.msg(GUEST, '/start', {}, 'g');
+  q = toGuest(s);
+  assert.equal(q[0].method, 'copyMessages'); assert.equal(q[0].message_ids.length, 2);
+  assert.equal(q[1].method, 'sendMessage'); assert.equal(q[1].reply_markup.inline_keyboard[0][0].text, 'Выйти на тропу');
+});
+
+test('приветствие: /start с feedback его не получает, чужие кнопки и /welcome не работают', async () => {
+  const s = setup();
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await buildPost(s, [['Привет']]);
+  await s.cb(GUEST, 'np:wel:1', 'g');                              // не админ
+  await s.cb(GUEST, 'wel:off', 'g');
+  assert.equal(await s.db.kvGet('welcome'), null);
+  await s.cb(ADMIN, 'np:wel:1', A_NAME);
+  await s.cb(GUEST, 'wel:off', 'g');                               // чужая кнопка не убирает приветствие
+  assert.ok(await s.db.kvGet('welcome'));
+  await s.msg(GUEST, '/welcome', {}, 'g');
+  assert.ok(!tgCalls.some(c => c.p.chat_id === GUEST && c.m === 'copyMessage'));
+  await s.msg(GUEST, '/start feedback', {}, 'g');
+  assert.equal(toGuest(s).filter(x => x.method === 'copyMessage').length, 0);
+});
+
+test('/welcome: показать, добавить и убрать кнопку, убрать приветствие', async () => {
+  const s = setup();
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await s.msg(ADMIN, '/welcome', {}, A_NAME);
+  assert.ok(s.queue().some(x => x.to === ADMIN && /пока нет/.test(x.text || '')));
+  await buildPost(s, [['Привет']]);
+  await s.cb(ADMIN, 'np:wel:0', A_NAME);
+  const at = JSON.parse(await s.db.kvGet('welcome')).at;
+  await s.cb(ADMIN, 'wel:btn', A_NAME);
+  let w = JSON.parse(await s.db.kvGet('welcome'));
+  assert.equal(w.btn, true); assert.equal(w.at, at);               // версия не меняется: кто уже видел, второй раз не получит
+  await s.cb(ADMIN, 'wel:btn', A_NAME);
+  assert.equal(JSON.parse(await s.db.kvGet('welcome')).btn, false);
+  await s.cb(ADMIN, 'wel:off', A_NAME);
+  assert.equal(await s.db.kvGet('welcome'), null);
+  await s.msg(GUEST, '/start', {}, 'g');
+  assert.equal(toGuest(s).filter(x => /^copy/.test(x.method)).length, 0);   // приветствия нет, только согласие
+  assert.ok(toGuest(s).some(x => x.method === 'sendMessage' && /согласие/.test(x.text)));
+});
+
+test('приветствие: исходные сообщения удалены, админ узнаёт сразу; /delete_me даёт новое приветствие', async () => {
+  const s = setup();
+  await s.msg(ADMIN, '/start', {}, A_NAME);
+  await buildPost(s, [['Привет']]);
+  failCopy = true;
+  await s.cb(ADMIN, 'np:wel:1', A_NAME);                           // копия не получилась: ничего не сохраняем
+  assert.equal(await s.db.kvGet('welcome'), null);
+  assert.ok(s.queue().some(x => x.to === ADMIN && /Не получилось собрать приветствие/.test(x.text || '')));
+  failCopy = false;
+  await s.cb(ADMIN, 'np:wel:1', A_NAME);
+  assert.ok(await s.db.kvGet('welcome'));
+  failCopy = true;
+  await s.msg(ADMIN, '/welcome', {}, A_NAME);
+  assert.ok(s.queue().some(x => x.to === ADMIN && /исходные сообщения, похоже, удалили/.test(x.text || '')));
+  failCopy = false;
+
+  await s.msg(GUEST, '/start', {}, 'g');
+  assert.ok(await s.db.kvGet('wel:' + GUEST));
+  await s.cb(GUEST, 'delme:yes', 'g');
+  assert.equal(await s.db.kvGet('wel:' + GUEST), null);            // метка стёрта вместе с остальными данными
+  await s.msg(GUEST, '/start', {}, 'g');
+  assert.equal(toGuest(s).filter(x => x.method === 'copyMessage').length, 1);
+});
+
+test('меню команд админа содержит /welcome, у обычных людей его нет', () => {
+  assert.ok(ADMIN_COMMANDS.some(c => c.command === 'welcome'));
+  assert.ok(!USER_COMMANDS.some(c => c.command === 'welcome'));
 });
